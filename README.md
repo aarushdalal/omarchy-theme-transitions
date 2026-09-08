@@ -47,6 +47,13 @@ Tested exclusively against Omarchy 4.0.2 / Quickshell 0.3.1. Other versions may 
 
 ---
 
+
+## 🎬 Demo
+
+**Live theme transition in action:**
+
+<video src="https://github.com/aarushdalal/omarchy-theme-transitions/raw/main/assets/showcase/wallpaper_switch_theme.mp4" controls width="100%"></video>
+
 ## Installation & Reference Port Guide
 
 1. Install the CLI utility:
