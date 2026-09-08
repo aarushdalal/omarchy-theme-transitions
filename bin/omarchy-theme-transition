@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# omarchy-theme-transition: Switch and manage Theme Switching Transition modes for Omarchy
+# Part of the Omarchy Theme Switching Transition Engine
+
+set -euo pipefail
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy"
+STATE_FILE="$STATE_DIR/theme-transition-mode"
+REDUCED_MOTION_FILE="$STATE_DIR/reduced-motion"
+
+mkdir -p "$STATE_DIR"
+
+get_current() {
+  if [[ -f "$STATE_FILE" ]]; then
+    local mode
+    mode="$(cat "$STATE_FILE" | tr -d '[:space:]')"
+    if [[ -n "$mode" ]]; then
+      echo "$mode"
+      return
+    fi
+  fi
+  echo "color-morph"
+}
+
+human_name() {
+  case "$1" in
+    color-morph)        echo "Color Morph (Default)" ;;
+    aurora-flow)        echo "Aurora Flow" ;;
+    ink-spread)         echo "Ink Spread" ;;
+    prism-shift)        echo "Prism Shift" ;;
+    liquid-transform)   echo "Liquid Transform" ;;
+    atmospheric-fade)   echo "Atmospheric Fade" ;;
+    material-repaint)   echo "Material Repaint" ;;
+    reality-shift)      echo "Reality Shift" ;;
+    *)                  echo "$1" ;;
+  esac
+}
+
+mode_desc() {
+  case "$1" in
+    color-morph)        echo "Perceptual gamma-corrected semantic color token interpolation" ;;
+    aurora-flow)        echo "Directional luminous wave sweeping across screen surfaces" ;;
+    ink-spread)         echo "Radial fluid ink bloom expanding outward from center" ;;
+    prism-shift)        echo "Spectral chromatic refraction and optical dispersion" ;;
+    liquid-transform)   echo "Viscous fluid tension with elastic bounce and surface bloom" ;;
+    atmospheric-fade)   echo "Cinematic environmental exposure dip and atmospheric bloom" ;;
+    material-repaint)   echo "Staggered architectural layer repaint in precision sequence" ;;
+    reality-shift)      echo "Dimensional phase warp between aesthetic universes" ;;
+    *)                  echo "Omarchy Theme Transition" ;;
+  esac
+}
+
+valid_mode() {
+  case "$1" in
+    color-morph|aurora-flow|ink-spread|prism-shift|liquid-transform|atmospheric-fade|material-repaint|reality-shift)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+cmd="${1:-current}"
+
+case "$cmd" in
+  get)
+    if [[ $# -lt 2 ]]; then
+      get_current
+    else
+      target="${2:-}"
+      current="$(get_current)"
+      if [[ "$current" == "$target" ]]; then
+        exit 0
+      else
+        exit 1
+      fi
+    fi
+    ;;
+
+  current)
+    current="$(get_current)"
+    echo "$current - $(human_name "$current")"
+    ;;
+
+  list)
+    modes=(color-morph aurora-flow ink-spread prism-shift liquid-transform atmospheric-fade material-repaint reality-shift)
+    curr="$(get_current)"
+    for m in "${modes[@]}"; do
+      if [[ "$m" == "$curr" ]]; then
+        printf "* %-18s - %-22s (%s)\n" "$m" "$(human_name "$m")" "$(mode_desc "$m")"
+      else
+        printf "  %-18s - %-22s (%s)\n" "$m" "$(human_name "$m")" "$(mode_desc "$m")"
+      fi
+    done
+    ;;
+
+  set)
+    mode="${2:-color-morph}"
+    if ! valid_mode "$mode"; then
+      echo "Error: Unknown transition mode '$mode'" >&2
+      echo "Available modes: color-morph, aurora-flow, ink-spread, prism-shift, liquid-transform, atmospheric-fade, material-repaint, reality-shift" >&2
+      exit 1
+    fi
+
+    echo "$mode" > "$STATE_FILE"
+    label="$(human_name "$mode")"
+
+    if command -v notify-send &>/dev/null; then
+      notify-send -a "Omarchy Theme Engine" -i preferences-desktop-theme "Theme Switch Animation" "$label"
+    fi
+
+    if command -v omarchy-menu &>/dev/null; then
+      omarchy-menu refresh >/dev/null 2>&1 || true
+    fi
+
+    echo "Activated theme transition mode: $label ($mode)"
+    ;;
+
+  preview)
+    mode="${2:-$(get_current)}"
+    if ! valid_mode "$mode"; then
+      echo "Error: Unknown transition mode '$mode'" >&2
+      exit 1
+    fi
+
+    echo "Previewing theme transition: $(human_name "$mode") ($mode)..."
+    if command -v omarchy-shell &>/dev/null; then
+      omarchy-shell shell previewThemeTransition "$mode" >/dev/null 2>&1 || true
+    fi
+    ;;
+
+  *)
+    echo "Usage: omarchy-theme-transition [set <mode>|get [mode]|current|list|preview [mode]]"
+    exit 1
+    ;;
+esac
