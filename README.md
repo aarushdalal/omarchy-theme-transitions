@@ -129,9 +129,7 @@ If you modify `shaders/transition.frag`, recompile to `.qsb` before deploying:
 
 **Omarchy Desktop Showcase**
 
-![Omarchy Desktop Showcase](assets/showcase/wallpaper_switch_theme.gif)
-
-[Download the full WebM showcase video](https://raw.githubusercontent.com/aarushdalal/omarchy-theme-transitions/main/assets/showcase/wallpaper_switch_theme.webm)
+https://github.com/user-attachments/assets/fe6442a8-063c-4d4e-9a56-ecd54e8b6ffc
 
 ---
 
