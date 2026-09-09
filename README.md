@@ -127,9 +127,14 @@ If you modify `shaders/transition.frag`, recompile to `.qsb` before deploying:
 
 ## Showcase
 
-**Omarchy Desktop Showcase** (click to view)
+**Omarchy Desktop Showcase**
 
-<video src="./assets/showcase/wallpaper_switch_theme.webm" autoplay loop muted width="100%"></video>
+<video controls loop muted playsinline preload="metadata" width="100%">
+  <source src="https://raw.githubusercontent.com/aarushdalal/omarchy-theme-transitions/main/assets/showcase/wallpaper_switch_theme.webm" type="video/webm">
+  Your browser cannot play WebM video. [Download the showcase video](https://raw.githubusercontent.com/aarushdalal/omarchy-theme-transitions/main/assets/showcase/wallpaper_switch_theme.webm).
+</video>
+
+[Download the showcase video](https://raw.githubusercontent.com/aarushdalal/omarchy-theme-transitions/main/assets/showcase/wallpaper_switch_theme.webm)
 
 ---
 
