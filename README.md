@@ -125,6 +125,14 @@ If you modify `shaders/transition.frag`, recompile to `.qsb` before deploying:
 
 ---
 
+## Showcase
+
+**Omarchy Desktop Showcase** (click to view)
+
+<video src="./assets/showcase/wallpaper_switch_theme.webm" autoplay loop muted width="100%"></video>
+
+---
+
 ## License
 
 [MIT License](LICENSE).
