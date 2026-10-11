@@ -71,6 +71,8 @@ I did not write Omarchy, Quickshell, or Hyprland from scratch. What I contribute
 - **Double-Buffered VRAM Slot Architecture**: `slotA`/`slotB` ping-pong eliminates start-lag
 - **Optimized Shader Math**: `d * d` instead of `pow(d, 2.0)` for integrated GPU performance
 - **Dedicated CLI**: `omarchy-theme-transition` for inspecting, selecting, and previewing modes
+- **Widescreen Rounded Theme Picker UI**: Companion reference port (`ImagePicker.qml`) with 16:9 hero card, 26px rounded corners, spring physics, and frosted pill dock
+
 
 ---
 
@@ -145,3 +147,7 @@ https://github.com/user-attachments/assets/7c2473b5-d2b1-465a-a718-88189ca5579a
 - Powered by [Quickshell](https://quickshell.outfoxxed.me/) and [Hyprland](https://hyprland.org/).
 - Shader compiled with Qt Shader Baker (`qt6-shadertools`).
 - Not an official Omarchy product.
+
+## Refinement and privacy update
+
+Shader transitions · palette continuity · reduced motion. Current showcases use sample data; see [release privacy](docs/RELEASE-PRIVACY.md). Existing Git history is preserved.
