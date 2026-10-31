@@ -1,0 +1,739 @@
+#!/usr/bin/env python3
+"""
+omarchy-wallpaper-install: Universal Wallpaper & Theme Manager
+==============================================================
+Manages static images (PNG, JPG, WEBP) and live video wallpapers (MP4, MKV, WEBM),
+ingests Aether theme palettes (colors.toml), and targets Omarchy, Daemon OS, or both.
+Features automated health checks (--check), listing (--list), and safe deletion (--delete).
+"""
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:
+    try:
+        import tomli as tomllib
+    except ImportError:
+        tomllib = None
+
+# Base Paths
+HOME = Path.home()
+OMARCHY_THEMES = HOME / ".config" / "omarchy" / "themes"
+OMARCHY_VIDEOS = HOME / ".local" / "share" / "omarchy" / "wallpapers" / "videos"
+OMARCHY_STATE = HOME / ".local" / "state" / "omarchy"
+CAELESTIA_WALLPAPERS = HOME / ".local" / "share" / "caelestia" / "omarchy-wallpapers"
+CAELESTIA_STATE = HOME / ".local" / "state" / "caelestia"
+USER_WALLPAPERS = HOME / "Wallpapers"
+AETHER_THEME_DEFAULT = HOME / ".config" / "aether" / "theme"
+
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff"}
+VIDEO_EXTENSIONS = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+
+# ANSI Colors
+BOLD = "\033[1m"
+GREEN = "\033[32m"
+CYAN = "\033[36m"
+YELLOW = "\033[33m"
+MAGENTA = "\033[35m"
+RED = "\033[31m"
+RESET = "\033[0m"
+
+
+def slugify(value: str) -> str:
+    """Normalize string into clean filesystem-friendly slug."""
+    value = re.sub(r"[^\w\s-]", "", value).strip().lower()
+    return re.sub(r"[-\s]+", "-", value)
+
+
+def is_video_file(path: Path) -> bool:
+    return path.suffix.lower() in VIDEO_EXTENSIONS
+
+
+def is_image_file(path: Path) -> bool:
+    return path.suffix.lower() in IMAGE_EXTENSIONS
+
+
+def extract_poster_frame(video_path: Path, output_image: Path) -> bool:
+    """Extract a representative 1080p/4K poster frame from a video using ffmpeg."""
+    if not shutil.which("ffmpeg"):
+        print(f"{RED}[FAIL]{RESET} ffmpeg is required to extract video frames.", file=sys.stderr)
+        return False
+
+    output_image.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-ss", "00:00:01",
+        "-i", str(video_path),
+        "-vframes", "1",
+        "-f", "image2",
+        str(output_image)
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if res.returncode == 0 and output_image.exists():
+        return True
+
+    # Fallback to timestamp 0.0s if 1.0s failed (e.g., short clip)
+    cmd[2] = "00:00:00"
+    res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return res.returncode == 0 and output_image.exists()
+
+
+def generate_thumbnail(image_path: Path, thumb_path: Path, width: int = 320, height: int = 180) -> bool:
+    """Generate a clean 16:9 thumbnail preview image for theme menus."""
+    thumb_path.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which("magick"):
+        cmd = ["magick", str(image_path), "-resize", f"{width}x{height}^", "-gravity", "center", "-extent", f"{width}x{height}", str(thumb_path)]
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode == 0 and thumb_path.exists():
+            return True
+    elif shutil.which("convert"):
+        cmd = ["convert", str(image_path), "-resize", f"{width}x{height}^", "-gravity", "center", "-extent", f"{width}x{height}", str(thumb_path)]
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode == 0 and thumb_path.exists():
+            return True
+    elif shutil.which("ffmpeg"):
+        cmd = ["ffmpeg", "-y", "-i", str(image_path), "-vf", f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}", str(thumb_path)]
+        res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if res.returncode == 0 and thumb_path.exists():
+            return True
+
+    # Last resort fallback: copy full image
+    try:
+        shutil.copy2(image_path, thumb_path)
+        return True
+    except Exception:
+        return False
+
+
+def run_aether_generator(image_path: Path, output_dir: Path) -> bool:
+    """Invokes Aether desktop theme generator to produce colors.toml and palette."""
+    aether_bin = shutil.which("aether")
+    if not aether_bin:
+        print(f"{RED}[FAIL]{RESET} 'aether' binary not found in PATH.", file=sys.stderr)
+        return False
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  {CYAN}󰔎 Running Aether theme extraction on {image_path.name}...{RESET}")
+    cmd = [
+        aether_bin,
+        "--generate", str(image_path),
+        "--output", str(output_dir),
+        "--no-apply"
+    ]
+    res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    colors_file = output_dir / "colors.toml"
+    if colors_file.exists():
+        print(f"  {GREEN}✔ Aether theme generated successfully at {output_dir}{RESET}")
+        return True
+
+    print(f"{YELLOW}[WARN] Aether output did not generate colors.toml: {res.stderr.strip()}{RESET}")
+    return False
+
+
+def get_active_wallpaper_info() -> dict:
+    """Inspects the system to discover active background image, theme, and live player state."""
+    info = {
+        "omarchy_bg": None,
+        "omarchy_theme": None,
+        "is_live": False,
+        "live_video": None
+    }
+    # 1. Omarchy active background symlink
+    current_bg_link = OMARCHY_STATE / "current" / "background"
+    if current_bg_link.exists() or current_bg_link.is_symlink():
+        try:
+            info["omarchy_bg"] = current_bg_link.resolve()
+        except Exception:
+            pass
+
+    # 2. Omarchy active theme name
+    theme_name_file = OMARCHY_STATE / "current" / "theme.name"
+    if theme_name_file.is_file():
+        try:
+            info["omarchy_theme"] = theme_name_file.read_text(encoding="utf-8").strip()
+        except Exception:
+            pass
+
+    # 3. Live video wallpaper process (mpvpaper)
+    res = subprocess.run(["pgrep", "-f", "mpvpaper"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if res.returncode == 0:
+        info["is_live"] = True
+        try:
+            ps_res = subprocess.run(["pgrep", "-a", "-f", "mpvpaper"], stdout=subprocess.PIPE, text=True)
+            for line in ps_res.stdout.splitlines():
+                parts = line.split()
+                if len(parts) > 1:
+                    last_arg = parts[-1]
+                    info["live_video"] = Path(last_arg).name
+        except Exception:
+            pass
+
+    return info
+
+
+def check_system() -> int:
+    """Performs a comprehensive audit of wallpaper tools, directories, active states, and disk usage."""
+    print(f"\n{BOLD}{CYAN}=== Wallpaper System, Dependencies & Storage Health Check ==={RESET}\n")
+
+    deps = [
+        ("ffmpeg", True, "Video frame extraction & format conversion"),
+        ("magick", False, "ImageMagick v7 thumbnail generator"),
+        ("convert", False, "ImageMagick v6 thumbnail generator fallback"),
+        ("aether", False, "Dynamic Material You / Aether palette generator"),
+        ("mpvpaper", False, "Wayland video wallpaper background daemon"),
+        ("mpv", False, "Media playback engine"),
+        ("fzf", False, "Terminal interactive fuzzy finder"),
+        ("gum", False, "Modern terminal UI styling toolkit")
+    ]
+
+    print(f"{BOLD}1. Dependency Audit:{RESET}")
+    has_thumb_tool = False
+    all_req_ok = True
+    for binary, required, desc in deps:
+        p = shutil.which(binary)
+        if p:
+            if binary in ("magick", "convert", "ffmpeg"):
+                has_thumb_tool = True
+            print(f"  {GREEN}✔ {binary:<10}{RESET} -> {p} ({desc})")
+        else:
+            if required:
+                print(f"  {RED}✘ {binary:<10}{RESET} -> NOT FOUND (REQUIRED: {desc})")
+                all_req_ok = False
+            else:
+                print(f"  {YELLOW}○ {binary:<10}{RESET} -> Optional ({desc})")
+
+    if not has_thumb_tool:
+        print(f"  {YELLOW}[WARN] Neither ImageMagick nor ffmpeg found for thumbnail creation.{RESET}")
+
+    print(f"\n{BOLD}2. Storage Directory Permissions:{RESET}")
+    dirs_to_check = [
+        ("Omarchy Themes", OMARCHY_THEMES),
+        ("Omarchy Live Videos", OMARCHY_VIDEOS),
+        ("DaemonOS Wallpapers", CAELESTIA_WALLPAPERS),
+        ("User Wallpapers", USER_WALLPAPERS),
+        ("Aether Themes", AETHER_THEME_DEFAULT)
+    ]
+    for label, d in dirs_to_check:
+        status = "EXISTS" if d.exists() else "NOT FOUND (will be created on demand)"
+        color = GREEN if d.exists() else YELLOW
+        writable = os.access(d, os.W_OK) if d.exists() else True
+        w_str = f"({GREEN}Writable{RESET})" if writable else f"({RED}Read-only{RESET})"
+        print(f"  {color}● {label:<22}{RESET}: {d} [{status}] {w_str}")
+
+    print(f"\n{BOLD}3. Active Desktop State:{RESET}")
+    info = get_active_wallpaper_info()
+    if info["omarchy_theme"]:
+        print(f"  Omarchy Active Theme      : {CYAN}{info['omarchy_theme']}{RESET}")
+    if info["omarchy_bg"]:
+        print(f"  Omarchy Active Wallpaper  : {CYAN}{info['omarchy_bg']}{RESET}")
+    if info["is_live"]:
+        print(f"  Live Video Wallpaper      : {GREEN}RUNNING (mpvpaper active, video: {info['live_video'] or 'active'}){RESET}")
+    else:
+        print(f"  Live Video Wallpaper      : {YELLOW}STOPPED (static wallpaper active){RESET}")
+
+    # Broken symlinks check
+    broken_links = []
+    if CAELESTIA_WALLPAPERS.exists():
+        for link in CAELESTIA_WALLPAPERS.iterdir():
+            if link.is_symlink() and not link.resolve().exists():
+                broken_links.append(link)
+
+    print(f"\n{BOLD}4. Symlink & Integrity Audit:{RESET}")
+    if broken_links:
+        print(f"  {RED}✘ Found {len(broken_links)} broken symlinks in {CAELESTIA_WALLPAPERS}:{RESET}")
+        for bl in broken_links:
+            print(f"    - {bl.name}")
+    else:
+        print(f"  {GREEN}✔ Zero broken symlinks found in {CAELESTIA_WALLPAPERS}{RESET}")
+
+    # Storage calculation
+    def get_dir_size(path: Path) -> int:
+        if not path.exists():
+            return 0
+        total = 0
+        for entry in path.rglob("*"):
+            if entry.is_file() and not entry.is_symlink():
+                try:
+                    total += entry.stat().st_size
+                except Exception:
+                    pass
+        return total
+
+    print(f"\n{BOLD}5. Storage Footprint:{RESET}")
+    theme_size = get_dir_size(OMARCHY_THEMES) / (1024 * 1024)
+    video_size = get_dir_size(OMARCHY_VIDEOS) / (1024 * 1024)
+    user_size = get_dir_size(USER_WALLPAPERS) / (1024 * 1024)
+    print(f"  Omarchy Custom Themes     : {theme_size:.1f} MB")
+    print(f"  Omarchy Live Videos       : {video_size:.1f} MB")
+    print(f"  User Wallpapers Folder    : {user_size:.1f} MB")
+    print(f"  Total Wallpaper Storage   : {(theme_size + video_size + user_size):.1f} MB\n")
+
+    return 0 if all_req_ok else 1
+
+
+def scan_all_wallpapers() -> list[dict]:
+    """Scans Omarchy themes, videos, and DaemonOS directories for installed wallpapers."""
+    items = []
+    active_info = get_active_wallpaper_info()
+    seen_keys = set()
+
+    # 1. Custom Omarchy Themes (~/.config/omarchy/themes/)
+    if OMARCHY_THEMES.exists():
+        for tdir in sorted(OMARCHY_THEMES.iterdir()):
+            if tdir.is_dir() and not tdir.name.startswith("."):
+                slug = tdir.name
+                bg_dir = tdir / "backgrounds"
+                bg_files = []
+                if bg_dir.exists():
+                    bg_files = [f for f in bg_dir.iterdir() if f.is_file() and is_image_file(f)]
+
+                # Check for matching live video
+                matching_videos = []
+                if OMARCHY_VIDEOS.exists():
+                    for v in OMARCHY_VIDEOS.iterdir():
+                        if v.is_file() and is_video_file(v):
+                            if slug in slugify(v.stem) or slugify(v.stem) in slug:
+                                matching_videos.append(v)
+
+                is_active = (active_info["omarchy_theme"] == slug)
+                if not is_active and active_info["omarchy_bg"]:
+                    if any(b.resolve() == active_info["omarchy_bg"] for b in bg_files):
+                        is_active = True
+
+                item = {
+                    "slug": slug,
+                    "title": slug.replace("-", " ").title(),
+                    "type": "Live Video" if matching_videos else "Static Image",
+                    "omarchy_theme_dir": tdir,
+                    "background_files": bg_files,
+                    "video_files": matching_videos,
+                    "is_active": is_active,
+                    "is_aether_managed": (tdir / ".aether-managed").exists(),
+                    "is_system": False
+                }
+                items.append(item)
+                seen_keys.add(slug)
+
+    # 2. Standalone Live Videos in ~/.local/share/omarchy/wallpapers/videos/
+    if OMARCHY_VIDEOS.exists():
+        for v in sorted(OMARCHY_VIDEOS.iterdir()):
+            if v.is_file() and is_video_file(v):
+                v_slug = slugify(v.stem)
+                if v_slug not in seen_keys and not any(v in it["video_files"] for it in items):
+                    is_active = bool(active_info["is_live"] and active_info["live_video"] and v.name == active_info["live_video"])
+                    items.append({
+                        "slug": v_slug,
+                        "title": v.stem.replace("-", " ").title(),
+                        "type": "Live Video",
+                        "omarchy_theme_dir": None,
+                        "background_files": [],
+                        "video_files": [v],
+                        "is_active": is_active,
+                        "is_aether_managed": False,
+                        "is_system": False
+                    })
+                    seen_keys.add(v_slug)
+
+    return items
+
+
+def list_wallpapers():
+    """Prints a structured catalog of installed static and live wallpapers."""
+    items = scan_all_wallpapers()
+    print(f"\n{BOLD}{CYAN}=== Installed Wallpapers & Themes Catalog ==={RESET}\n")
+    if not items:
+        print(f"  {YELLOW}No custom wallpapers or themes installed yet.{RESET}")
+        print(f"  Install one with: {BOLD}omarchy-wallpaper-install -w <path>{RESET}\n")
+        return
+
+    print(f"{BOLD}{'#':<3} {'SLUG':<28} {'TYPE':<14} {'STATUS':<12} {'AETHER':<8} {'FILES'}{RESET}")
+    print("-" * 78)
+    for idx, it in enumerate(items, 1):
+        status_str = f"{GREEN}✔ ACTIVE{RESET}" if it["is_active"] else "  idle"
+        type_str = f"{MAGENTA}Live Video{RESET}" if it["type"] == "Live Video" else "Static"
+        aether_str = f"{CYAN}Yes{RESET}" if it["is_aether_managed"] else "No"
+        file_count = len(it["background_files"]) + len(it["video_files"])
+        files_str = f"{file_count} file(s)"
+        print(f"{idx:<3} {it['slug']:<28} {type_str:<23} {status_str:<20} {aether_str:<16} {files_str}")
+
+    print(f"\nTotal custom items: {len(items)}\n")
+
+
+def delete_wallpaper(
+    target_identifier: str,
+    target_env: str = "both",
+    apply_fallback: bool = True,
+    dry_run: bool = False,
+    assume_yes: bool = False
+) -> bool:
+    """Safely deletes wallpaper files, theme directories, and symlinks with fallback protection."""
+    items = scan_all_wallpapers()
+    slug_norm = slugify(target_identifier)
+
+    match = None
+    for it in items:
+        if it["slug"] == slug_norm or target_identifier.lower() in it["slug"] or target_identifier.lower() in it["title"].lower():
+            match = it
+            break
+
+    if not match:
+        print(f"{RED}[ERROR]{RESET} No wallpaper or theme matching '{target_identifier}' found.", file=sys.stderr)
+        print(f"Run {BOLD}omarchy-wallpaper-install --list{RESET} to see installed wallpapers.")
+        return False
+
+    if match.get("is_system", False):
+        print(f"{RED}[ERROR]{RESET} Cannot delete '{match['slug']}' because it is a protected system theme in /usr/share/.", file=sys.stderr)
+        return False
+
+    print(f"\n{BOLD}{RED}=== Delete Wallpaper & Theme: {match['slug']} ==={RESET}")
+    print(f"  Type      : {match['type']}")
+    print(f"  Target OS : {target_env.upper()}")
+    print(f"  Active    : {'YES (Will switch to safe fallback first)' if match['is_active'] else 'NO'}")
+    print(f"  Dry-Run   : {'YES' if dry_run else 'NO'}\n")
+
+    to_delete_dirs = []
+    to_delete_files = []
+
+    # Omarchy target
+    if target_env in ("omarchy", "both"):
+        if match["omarchy_theme_dir"] and match["omarchy_theme_dir"].exists():
+            to_delete_dirs.append(match["omarchy_theme_dir"])
+        for vf in match["video_files"]:
+            if vf.exists():
+                to_delete_files.append(vf)
+
+    # Daemon OS target
+    if target_env in ("daemon-os", "both"):
+        if CAELESTIA_WALLPAPERS.exists():
+            for link in CAELESTIA_WALLPAPERS.iterdir():
+                if match["slug"] in slugify(link.name):
+                    to_delete_files.append(link)
+        if USER_WALLPAPERS.exists():
+            for uf in USER_WALLPAPERS.iterdir():
+                if uf.is_file() and match["slug"] in slugify(uf.stem):
+                    to_delete_files.append(uf)
+
+    if not to_delete_dirs and not to_delete_files:
+        print(f"{YELLOW}[NOTICE] No files found matching '{match['slug']}' in target environment '{target_env}'.{RESET}")
+        return True
+
+    print(f"{BOLD}Files/Folders marked for deletion:{RESET}")
+    for d in to_delete_dirs:
+        print(f"  {RED}[DIR]  {d}{RESET}")
+    for f in to_delete_files:
+        print(f"  {RED}[FILE] {f}{RESET}")
+
+    if dry_run:
+        print(f"\n{GREEN}[DRY-RUN] Deletion simulation completed. No files were removed.{RESET}\n")
+        return True
+
+    if not assume_yes:
+        confirm = input(f"\n{BOLD}{RED}Are you sure you want to permanently delete these files? (y/N): {RESET}").strip().lower()
+        if confirm not in ("y", "yes"):
+            print(f"{YELLOW}Deletion aborted by user.{RESET}")
+            return False
+
+    # Active Wallpaper Protection: Safe Fallback Switch
+    if match["is_active"] and apply_fallback:
+        print(f"\n{CYAN}󰔎 Wallpaper is currently active. Safely switching desktop to fallback wallpaper...{RESET}")
+        if shutil.which("omarchy-live-wallpaper"):
+            subprocess.run(["omarchy-live-wallpaper", "stop"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        fallback_theme = "solitude"
+        fallback_bg = Path("/usr/share/omarchy/themes/solitude/backgrounds/1-on-pole.jpg")
+        if not fallback_bg.exists():
+            candidates = list(Path("/usr/share/omarchy/themes").glob("*/backgrounds/*"))
+            if candidates:
+                fallback_bg = candidates[0]
+                fallback_theme = fallback_bg.parent.parent.name
+
+        if fallback_bg.exists():
+            bg_set = shutil.which("omarchy-theme-bg-set") or str(HOME / ".local/share/omarchy/bin/omarchy-theme-bg-set")
+            if os.path.exists(bg_set):
+                subprocess.run([bg_set, str(fallback_bg)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print(f"  {GREEN}✔ Switched Omarchy desktop to safe fallback: {fallback_theme}{RESET}")
+
+            c_sync = HOME / ".local" / "bin" / "omarchy-wallpaper-theme-sync"
+            if c_sync.exists():
+                subprocess.run([str(c_sync), str(fallback_bg)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print(f"  {GREEN}✔ Synchronized fallback theme to Caelestia / Daemon OS{RESET}")
+
+    # File Removals
+    for f in to_delete_files:
+        try:
+            if f.is_symlink() or f.is_file():
+                f.unlink(missing_ok=True)
+                print(f"  {GREEN}✔ Removed file: {f.name}{RESET}")
+        except Exception as e:
+            print(f"  {YELLOW}[WARN] Could not remove {f}: {e}{RESET}")
+
+    for d in to_delete_dirs:
+        try:
+            if d.is_dir():
+                shutil.rmtree(d)
+                print(f"  {GREEN}✔ Removed theme directory: {d.name}{RESET}")
+        except Exception as e:
+            print(f"  {YELLOW}[WARN] Could not remove {d}: {e}{RESET}")
+
+    # Clean orphaned symlinks in Caelestia
+    if CAELESTIA_WALLPAPERS.exists():
+        for link in CAELESTIA_WALLPAPERS.iterdir():
+            if link.is_symlink() and not link.resolve().exists():
+                link.unlink(missing_ok=True)
+
+    print(f"\n{BOLD}{GREEN}Wallpaper '{match['slug']}' deleted successfully!{RESET}\n")
+    return True
+
+
+def install_theme_and_wallpaper(
+    wallpaper_path: Path,
+    theme_source_dir: Path | None,
+    target_env: str,
+    theme_name: str | None = None,
+    apply_now: bool = False,
+    dry_run: bool = False
+) -> bool:
+    """Installs the wallpaper and theme files into Omarchy, Daemon OS, or both."""
+    resolved_wall = wallpaper_path.resolve()
+    if not resolved_wall.is_file():
+        print(f"{RED}[ERROR]{RESET} Wallpaper file does not exist: {wallpaper_path}", file=sys.stderr)
+        return False
+
+    is_video = is_video_file(resolved_wall)
+    is_img = is_image_file(resolved_wall)
+    if not is_video and not is_img:
+        print(f"{RED}[ERROR]{RESET} Unsupported file type: {resolved_wall.suffix}", file=sys.stderr)
+        return False
+
+    # Derive slug name
+    slug = slugify(theme_name or resolved_wall.stem)
+    if not slug:
+        slug = "custom-theme"
+
+    print(f"\n{BOLD}{CYAN}=== Installing Wallpaper & Theme: {slug} ==={RESET}")
+    print(f"  Type       : {'Live Video Wallpaper' if is_video else 'Static Wallpaper'}")
+    print(f"  Source     : {resolved_wall}")
+    print(f"  Target OS  : {target_env.upper()}")
+    print(f"  Dry-Run    : {'YES' if dry_run else 'NO'}")
+
+    # Prepare temporary or poster image for video
+    poster_image = resolved_wall
+    temp_poster: Path | None = None
+    if is_video:
+        temp_dir = Path("/tmp/omarchy-wallpaper-install")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_poster = temp_dir / f"{slug}-poster.jpg"
+        if not dry_run:
+            print(f"  {CYAN}󰎁 Extracting video poster frame for static lockscreen fallback...{RESET}")
+            if not extract_poster_frame(resolved_wall, temp_poster):
+                print(f"{RED}[ERROR]{RESET} Failed to extract video poster frame.", file=sys.stderr)
+                return False
+        poster_image = temp_poster
+
+    # Check or generate Aether theme
+    theme_colors_src = None
+    if theme_source_dir and (theme_source_dir / "colors.toml").is_file():
+        theme_colors_src = theme_source_dir / "colors.toml"
+    elif theme_source_dir and theme_source_dir.is_file() and theme_source_dir.name == "colors.toml":
+        theme_colors_src = theme_source_dir
+    elif (AETHER_THEME_DEFAULT / "colors.toml").is_file() and not theme_source_dir:
+        theme_colors_src = AETHER_THEME_DEFAULT / "colors.toml"
+
+    if not theme_colors_src or not theme_colors_src.is_file():
+        # Auto-generate with Aether
+        gen_dir = Path("/tmp/aether-generated") / slug
+        if not dry_run:
+            if run_aether_generator(poster_image, gen_dir):
+                theme_colors_src = gen_dir / "colors.toml"
+                theme_source_dir = gen_dir
+            else:
+                print(f"{YELLOW}[WARN]{RESET} Continuing without Aether colors.toml (default palettes will apply).")
+
+    # Target Omarchy
+    if target_env in ("omarchy", "both"):
+        dest_theme_dir = OMARCHY_THEMES / slug
+        dest_bg_dir = dest_theme_dir / "backgrounds"
+        dest_wall = dest_bg_dir / (poster_image.name if is_video else resolved_wall.name)
+        dest_thumb = dest_theme_dir / "preview.png"
+        dest_colors = dest_theme_dir / "colors.toml"
+        dest_icons = dest_theme_dir / "icons.theme"
+        dest_marker = dest_theme_dir / ".aether-managed"
+
+        print(f"\n{BOLD}[1/2] Installing to Omarchy...{RESET}")
+        if dry_run:
+            print(f"  [DRY-RUN] mkdir -p {dest_bg_dir}")
+            print(f"  [DRY-RUN] copy {resolved_wall} -> {dest_wall}")
+            if is_video:
+                print(f"  [DRY-RUN] copy {resolved_wall} -> {OMARCHY_VIDEOS / resolved_wall.name}")
+            print(f"  [DRY-RUN] generate thumbnail -> {dest_thumb}")
+            if theme_colors_src and theme_colors_src.is_file():
+                print(f"  [DRY-RUN] copy {theme_colors_src} -> {dest_colors}")
+        else:
+            dest_bg_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(poster_image, dest_wall)
+
+            if is_video:
+                OMARCHY_VIDEOS.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(resolved_wall, OMARCHY_VIDEOS / resolved_wall.name)
+                print(f"  {GREEN}✔ Copied live video to {OMARCHY_VIDEOS / resolved_wall.name}{RESET}")
+
+            generate_thumbnail(poster_image, dest_thumb)
+            print(f"  {GREEN}✔ Generated preview thumbnail at {dest_thumb}{RESET}")
+
+            if theme_colors_src and theme_colors_src.is_file():
+                shutil.copy2(theme_colors_src, dest_colors)
+                print(f"  {GREEN}✔ Installed Aether colors.toml{RESET}")
+
+            if not dest_icons.exists():
+                dest_icons.write_text("automatic\n", encoding="utf-8")
+
+            dest_marker.touch()
+            print(f"  {GREEN}✔ Omarchy theme registered: {dest_theme_dir}{RESET}")
+
+    # Target Daemon OS
+    if target_env in ("daemon-os", "both"):
+        print(f"\n{BOLD}[2/2] Installing to Daemon OS...{RESET}")
+        daemon_wall_dest = CAELESTIA_WALLPAPERS / (poster_image.name if is_video else resolved_wall.name)
+        user_wall_dest = USER_WALLPAPERS / resolved_wall.name
+
+        if dry_run:
+            print(f"  [DRY-RUN] copy/link {resolved_wall} -> {daemon_wall_dest}")
+            print(f"  [DRY-RUN] copy {resolved_wall} -> {user_wall_dest}")
+        else:
+            CAELESTIA_WALLPAPERS.mkdir(parents=True, exist_ok=True)
+            USER_WALLPAPERS.mkdir(parents=True, exist_ok=True)
+
+            shutil.copy2(poster_image, daemon_wall_dest)
+            shutil.copy2(resolved_wall, user_wall_dest)
+            print(f"  {GREEN}✔ Installed wallpaper to {daemon_wall_dest}{RESET}")
+            print(f"  {GREEN}✔ Synchronized to {user_wall_dest}{RESET}")
+
+            if is_video:
+                OMARCHY_VIDEOS.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(resolved_wall, OMARCHY_VIDEOS / resolved_wall.name)
+
+    # Optional immediate activation
+    if apply_now and not dry_run:
+        print(f"\n{BOLD}{CYAN}=== Applying Newly Installed Theme & Wallpaper ==={RESET}")
+        bg_set = shutil.which("omarchy-theme-bg-set") or str(HOME / ".local/share/omarchy/bin/omarchy-theme-bg-set")
+        if os.path.exists(bg_set):
+            subprocess.run([bg_set, str(poster_image)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"  {GREEN}✔ Activated wallpaper in Omarchy{RESET}")
+
+        if is_video and shutil.which("omarchy-live-wallpaper"):
+            subprocess.run(["omarchy-live-wallpaper", "start", str(resolved_wall.name)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"  {GREEN}✔ Started live video wallpaper playback{RESET}")
+
+        c_sync = HOME / ".local" / "bin" / "omarchy-wallpaper-theme-sync"
+        if c_sync.exists():
+            subprocess.run([str(c_sync), str(poster_image)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print(f"  {GREEN}✔ Synchronized Material You palettes across Hyprland, Foot, and Caelestia{RESET}")
+
+    print(f"\n{BOLD}{GREEN}Installation complete!{RESET}\n")
+    return True
+
+
+def interactive_delete_wizard():
+    """Use the same scoped, recoverable removal flow as the standalone tool."""
+    return subprocess.run([str(HOME / '.local/bin/wallpaper-manager'), '--remove']).returncode
+
+
+def interactive_install_wizard():
+    """Import static/video/Workshop media through the maintained importer."""
+    return subprocess.run([str(HOME / '.local/bin/wallpaper-add')]).returncode
+
+
+def interactive_wizard():
+    print(f"{BOLD}{MAGENTA}╔═══════════════════════════════════════════════════════════════════╗{RESET}")
+    print(f"{BOLD}{MAGENTA}║      Universal Wallpaper & Theme Manager (Omarchy & Daemon OS)    ║{RESET}")
+    print(f"{BOLD}{MAGENTA}╚═══════════════════════════════════════════════════════════════════╝{RESET}\n")
+
+    print(f"{BOLD}Choose an action:{RESET}")
+    print("  [1] 󰸌  Install New Wallpaper & Theme (Static or Live Video)")
+    print("  [2] 󰆴  Delete / Uninstall Wallpaper & Theme")
+    print("  [3] 󰄛  List All Installed Wallpapers & Themes")
+    print("  [4] 󰓅  Check System, Dependencies & Storage Health")
+    print("  [5] 󰁍  Exit")
+
+    choice = input(f"\n{BOLD}Selection [1-5, default: 1]: {RESET}").strip() or "1"
+
+    if choice == "1":
+        return interactive_install_wizard()
+    elif choice == "2":
+        return interactive_delete_wizard()
+    elif choice == "3":
+        return subprocess.run([str(HOME / '.local/bin/wallpaper-manager'), '--list']).returncode
+    elif choice == "4":
+        check_system()
+    else:
+        print("Goodbye!")
+        return
+
+
+def main():
+    prog_name = Path(sys.argv[0]).name if sys.argv else "wallpaper"
+    parser = argparse.ArgumentParser(
+        prog=prog_name,
+        description="Universal wallpaper and Aether theme manager for Omarchy and Daemon OS."
+    )
+    parser.add_argument("-w", "--wallpaper", type=Path, help="Path to image, live video, Workshop project folder or numeric ID.")
+    parser.add_argument("-t", "--theme-dir", type=Path, help="Path to Aether theme directory or colors.toml.")
+    parser.add_argument(
+        "--target",
+        choices=["omarchy", "daemon-os", "both"],
+        default="both",
+        help="Target environment (default: both)."
+    )
+    parser.add_argument("-n", "--name", type=str, help="Custom theme slug name.")
+    parser.add_argument("-a", "--apply", action="store_true", help="Apply wallpaper and theme immediately upon installation.")
+    parser.add_argument("--dry-run", action="store_true", help="Preview installation or deletion actions without making changes.")
+    parser.add_argument("-i", "--interactive", action="store_true", help="Run interactive prompt wizard.")
+    parser.add_argument("-c", "--check", action="store_true", help="Run system, dependency, and storage health audit.")
+    parser.add_argument("-l", "--list", action="store_true", help="List all installed custom wallpapers and themes.")
+    parser.add_argument("-d", "--delete", nargs="?", const="__PROMPT__", type=str, help="Delete wallpaper/theme by name or prompt interactively.")
+    parser.add_argument("-y", "--yes", action="store_true", help="Skip confirmation prompt on deletion.")
+
+    args = parser.parse_args()
+
+    if args.check:
+        code = check_system()
+        sys.exit(code)
+
+    if args.list:
+        sys.exit(subprocess.run([str(HOME / '.local/bin/wallpaper-manager'), '--list']).returncode)
+
+    if args.delete is not None:
+        command = [str(HOME / '.local/bin/wallpaper-manager'), '--remove']
+        if args.delete != '__PROMPT__':
+            command += [args.delete, '--target', args.target]
+        if args.yes:
+            command += ['--yes']
+        if args.dry_run:
+            command += ['--dry-run']
+        sys.exit(subprocess.run(command).returncode)
+
+    if args.interactive or not args.wallpaper:
+        sys.exit(interactive_wizard() or 0)
+
+    command = [str(HOME / '.local/bin/wallpaper-add'), str(args.wallpaper),
+               '--target', args.target, '--non-interactive']
+    if args.name is not None:
+        command += ['--name', args.name]
+    if args.theme_dir:
+        command += ['--colors', str(args.theme_dir)]
+    command += ['--apply' if args.apply else '--no-apply']
+    if args.dry_run:
+        command += ['--dry-run']
+    sys.exit(subprocess.run(command).returncode)
+
+
+
+if __name__ == "__main__":
+    main()

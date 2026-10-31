@@ -14,6 +14,9 @@ __pycache__/
 *~
 .cache/
 
+# Manager jobs, source media and recovery journals are local runtime data.
+reference/wallpaper-manager/data/
+
 # Runtime state & secrets
 *.sock
 *.pid

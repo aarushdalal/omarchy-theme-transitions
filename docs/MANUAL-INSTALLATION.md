@@ -15,7 +15,8 @@ Modifying core shell internals directly (`~/.local/share/omarchy/shell` or `/usr
 ## Components in `reference/`
 
 - **`reference/Background.qml`**: Reference port for `~/.local/share/omarchy/shell/plugins/background/Background.qml` featuring the double-buffered VRAM slot architecture and GLSL 440 transition shader bindings.
-- **`reference/ImagePicker.qml`**: Reference port for `~/.local/share/omarchy/shell/plugins/image-picker/ImagePicker.qml` providing the widescreen 16:9 hero card layout, 26px rounded corners, floating frosted info dock, and fluid spring physics.
+- **`reference/ImagePicker.qml`**, **`ImagePickerModel.js`** and **`list.sh`**: Native card-gallery reference with original-image cards, wallpaper totals and separate group/search scope. These companion files belong together in a user-owned image-picker clone. `image-picker.manifest.json` documents the overlay entry point.
+- **`reference/wallpaper-manager/`**: Optional manager/backend reference with mounted-drive places, persistent multi-folder selection, explicit per-folder group choices and durable background imports. Follow its [separate integration guide](../reference/wallpaper-manager/README.md).
 
 ## Compilation Step
 

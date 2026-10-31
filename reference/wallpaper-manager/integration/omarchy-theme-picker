@@ -1,0 +1,13 @@
+#!/bin/bash
+set -euo pipefail
+# Use the user-owned optimized gallery and the native theme application flow.
+# Hold this lock only through selection. Children must not retain it after the
+# gallery closes, and theme application must not block the next gallery opening.
+exec 9>"${XDG_RUNTIME_DIR:-$HOME/.cache}/omarchy-theme-picker.lock"
+flock -n 9 || exit 0
+choice=$("$HOME/.local/bin/omarchy-theme-switcher" "$@" 9>&-)
+exec 9>&-
+[[ -n "$choice" ]] || exit 0
+# Gallery filenames use friendly labels; the native setter needs stable slugs.
+choice=$(python3 "$HOME/Projects/wallpaper-importer/wallpaper_names.py" --resolve "$choice")
+omarchy theme set "$choice"

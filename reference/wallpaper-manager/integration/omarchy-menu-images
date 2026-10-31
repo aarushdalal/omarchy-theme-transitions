@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+# omarchy:args=[--selected <image>] [--print-name] [--show-labels] [--filterable] [--lazy-thumbnails] [--preload] [--cache-only] <image-dir>...
+# omarchy:summary=Open an optimized image selector
+"""Responsive image-selector transport with a bounded thumbnail queue."""
+import argparse,base64,fcntl,hashlib,json,os,shutil,subprocess,sys,tempfile,time
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+EXTS={'.jpg','.jpeg','.png','.gif','.bmp','.webp'}
+CACHE=Path(os.environ.get('XDG_CACHE_HOME',str(Path.home()/'.cache')))/'omarchy/image-selector-v4'
+SCRIPT=Path(__file__).resolve()
+
+def atomic(path,text):
+    tmp=path.with_name(path.name+'.'+str(os.getpid())+'.tmp');tmp.write_text(text);tmp.replace(path)
+
+def scan(dirs):
+    values=[];seen=set()
+    for folder in dirs:
+        folder=Path(folder).expanduser()
+        if not folder.is_dir():continue
+        for path in sorted(folder.iterdir()):
+            if path.suffix.lower() not in EXTS or not path.is_file():continue
+            stat=path.stat();identity=(stat.st_dev,stat.st_ino)
+            if identity in seen:continue
+            seen.add(identity)
+            values.append((path,stat))
+    return values
+
+def build_rows(dirs,selected=''):
+    CACHE.mkdir(parents=True,exist_ok=True)
+    rows=[];jobs=[];selected_path='';wanted=Path(selected).resolve() if selected else None
+    for path,stat in scan(dirs):
+        key=hashlib.sha256((str(path.resolve())+':'+str(stat.st_size)+':'+str(stat.st_mtime_ns)).encode()).hexdigest()[:24]
+        thumbnail=CACHE/(key+'.jpg')
+        rows.append(str(path)+'\t'+str(thumbnail if thumbnail.is_file() else path))
+        if wanted and path.resolve()==wanted:selected_path=str(path)
+        if not thumbnail.is_file():jobs.append([str(path.resolve()),str(thumbnail)])
+    return '\n'.join(rows),selected_path,jobs
+
+def generate(pair):
+    source,target=map(Path,pair)
+    if target.is_file():return
+    temporary=target.with_name(target.stem+'.'+str(os.getpid())+'.tmp.jpg')
+    env=dict(os.environ,VIPS_CONCURRENCY='1',OMP_NUM_THREADS='1')
+    try:
+        result=subprocess.run(['vipsthumbnail',str(source),'--size','720x405','--smartcrop=centre','--path',str(temporary)+'[Q=82,strip]'],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=45)
+        if result.returncode==0 and temporary.is_file():temporary.replace(target)
+    except (OSError,subprocess.TimeoutExpired):pass
+    finally:temporary.unlink(missing_ok=True)
+
+def worker():
+    CACHE.mkdir(parents=True,exist_ok=True)
+    with (CACHE/'worker.lock').open('a') as lock:
+        for attempt in range(20):
+            try:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if attempt == 19:return
+                time.sleep(.05)
+        os.nice(15)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            # Keep pending work durable if another picker queues during a batch.
+            while True:
+                files=sorted(CACHE.glob('queue-*.json'))
+                if not files:break
+                tasks={}
+                for path in files:
+                    try:
+                        for source,target in json.loads(path.read_text()):tasks[target]=[source,target]
+                    except (OSError,ValueError):pass
+                    path.unlink(missing_ok=True)
+                list(pool.map(generate,tasks.values()))
+
+def queue(jobs,wait=False):
+    if not jobs:return
+    path=CACHE/('queue-'+str(time.time_ns())+'.json');atomic(path,json.dumps(jobs))
+    if wait:
+        # Cache-only work is explicit and still capped to two low-priority jobs.
+        worker()
+        return
+    subprocess.Popen([sys.executable,str(SCRIPT),'--worker'],stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True)
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--selected',default='')
+    for flag in ['print-name','show-labels','filterable','lazy-thumbnails','prepare-only','preload','cache-only','rows-only','worker']:
+        p.add_argument('--'+flag,action='store_true')
+    p.add_argument('dirs',nargs='*');a=p.parse_args()
+    if a.worker:worker();return 0
+    if not a.dirs:p.error('At least one image directory is required')
+    dirs=[p for group in a.dirs for p in group.splitlines() if p]
+    rows,selected,jobs=build_rows(dirs,a.selected)
+    if a.rows_only:print(rows);return 0
+    if a.cache_only:queue(jobs,wait=True);return 0
+    if a.prepare_only:return 0
+    queue(jobs)
+    encoded=base64.b64encode(rows.encode()).decode()
+    # Keep IPC messages below Quickshell's practical frame limit. Larger
+    # collections use the native asynchronous directory scan over the same rows.
+    image_dirs=''
+    if len(encoded)>32768:
+        image_dirs='\n'.join(dirs)
+        encoded=''
+    if a.preload:
+        if image_dirs:return 0
+        subprocess.run(['omarchy-shell','image-selector','preload',encoded,selected,str(a.show_labels).lower(),str(a.filterable).lower()],stdout=subprocess.DEVNULL,check=False)
+        return 0
+    with tempfile.TemporaryDirectory(prefix='omarchy-picker-',dir=os.environ.get('XDG_RUNTIME_DIR')) as folder:
+        selection=Path(folder)/'selection';done=Path(folder)/'done'
+        started=time.monotonic()
+        result=subprocess.run(['omarchy-shell','image-selector','open',image_dirs,encoded,selected,str(selection),str(done),str(a.show_labels).lower(),str(a.filterable).lower()],capture_output=True,text=True,env=dict(os.environ,OMARCHY_SHELL_IPC_TIMEOUT=os.environ.get('OMARCHY_SHELL_IPC_TIMEOUT','5s')))
+        if result.returncode or result.stdout.strip()!='ok':
+            reason=(result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}')
+            print('Image selector did not accept the request: '+reason,file=sys.stderr);return 1
+        atomic(CACHE/'last-open.json',json.dumps({'rows':len(rows.splitlines()),'ipc_seconds':round(time.monotonic()-started,4),'accepted':True}))
+        try:
+            while not done.exists():time.sleep(.05)
+        except KeyboardInterrupt:
+            subprocess.run(['omarchy-shell','-q','image-selector','cancel',str(done)],stdout=subprocess.DEVNULL,check=False)
+            return 0
+        if selection.is_file():
+            value=selection.read_text().strip()
+            print(Path(value).stem if a.print_name else value)
+    return 0
+if __name__=='__main__':sys.exit(main())

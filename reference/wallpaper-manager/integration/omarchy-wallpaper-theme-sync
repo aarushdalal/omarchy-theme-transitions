@@ -1,0 +1,933 @@
+#!/usr/bin/env python3
+"""
+omarchy-wallpaper-theme-sync
+Unified wallpaper-adaptive theming engine for DaemonOS and Omarchy.
+Extracts Material You and ANSI palettes from the active wallpaper and
+synchronizes them to Foot terminal, web browsers (Brave/Chrome), Hyprland,
+GTK 3/4, Caelestia shell, and IDEs (Antigravity/VS Code).
+"""
+
+import fcntl
+import hashlib
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+
+HOME = Path.home()
+OMARCHY_STATE = HOME / ".local/state/omarchy/current"
+CAELESTIA_STATE = HOME / ".local/state/caelestia"
+HYPR_SCHEME_DIR = HOME / ".config/hypr/scheme"
+
+
+def hex_to_rgb(hex_str: str) -> tuple[int, int, int]:
+    s = hex_str.lstrip("#")
+    if len(s) == 3:
+        s = "".join(c * 2 for c in s)
+    if len(s) >= 6:
+        return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    return (0, 0, 0)
+
+
+def hex_to_ansi(c: str, *i: int) -> str:
+    c = c.lstrip("#")
+    if len(c) < 6:
+        c = c.ljust(6, "0")
+    return f"\x1b]{';'.join(map(str, i))};rgb:{c[0:2]}/{c[2:4]}/{c[4:6]}\x1b\\"
+
+
+def resolve_wallpaper_path(arg_path: str | None) -> Path | None:
+    if arg_path:
+        p = Path(arg_path).expanduser().resolve()
+        if p.is_file():
+            return p
+
+    link = OMARCHY_STATE / "background"
+    if link.is_symlink() or link.is_file():
+        p = link.resolve()
+        if p.is_file():
+            return p
+
+    c_wall = CAELESTIA_STATE / "wallpaper/path.txt"
+    if c_wall.is_file():
+        p = Path(c_wall.read_text().strip()).resolve()
+        if p.is_file():
+            return p
+
+    return None
+
+
+def extract_frame_if_video(path: Path) -> Path:
+    video_exts = {".mp4", ".mkv", ".webm", ".mov", ".avi"}
+    if path.suffix.lower() in video_exts:
+        thumb = Path("/tmp/omarchy-live-wallpaper-thumb.jpg")
+        if shutil.which("ffmpeg"):
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-ss",
+                    "00:00:01",
+                    "-i",
+                    str(path),
+                    "-vframes",
+                    "1",
+                    "-f",
+                    "image2",
+                    str(thumb),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            if thumb.is_file():
+                return thumb
+    return path
+
+
+def to_vibrant_dark_shade(hex_code: str, target_l: float = 0.46, min_s: float = 0.55) -> str:
+    """Derives a rich, vibrant darker shade from any color.
+    Ensures it is clearly visible and colorful on black screens (L ~ 44-48%, S >= 55%),
+    never washed out pastel (L > 70%) and never near-black (L < 30%).
+    """
+    import colorsys
+    s = hex_code.lstrip("#")
+    if len(s) < 6:
+        return hex_code
+    r, g, b = [int(s[i:i+2], 16) / 255.0 for i in (0, 2, 4)]
+    h, l, s_val = colorsys.rgb_to_hls(r, g, b)
+    new_s = max(min_s, min(0.85, s_val * 1.35))
+    nr, ng, nb = colorsys.hls_to_rgb(h, target_l, new_s)
+    return f"{int(nr * 255):02x}{int(ng * 255):02x}{int(nb * 255):02x}"
+
+
+def wallpaper_theme_directories(slug):
+    # DaemonOS-only imports retain authored palettes in the shared media library.
+    return [HOME / f".config/omarchy/themes/{slug}",
+            HOME / f".local/share/omarchy/wallpapers/library/{slug}",
+            Path(f"/usr/share/omarchy/themes/{slug}")]
+
+
+def load_theme_colors_if_available(wall_path: Path):
+    """If the wallpaper belongs to an Omarchy theme that has colors.toml, load the authored palette."""
+    real_p = wall_path.resolve()
+    candidates = []
+
+    # 1. Check directory hierarchy and filename of the wallpaper first
+    if real_p.parent.name == "backgrounds":
+        p_parent = real_p.parent.parent.name
+        if p_parent not in {"theme", "current", "."} and p_parent not in candidates:
+            candidates.append(p_parent)
+    m = re.match(r"^([a-z0-9-]+)-[a-f0-9]{12}-", wall_path.name)
+    if m and m.group(1) not in candidates:
+        candidates.append(m.group(1))
+
+    # 2. Check active theme state from files
+    for state_file in [OMARCHY_STATE / "theme.name", CAELESTIA_STATE / "omarchy-theme.name"]:
+        if state_file.is_file():
+            try:
+                t_name = state_file.read_text().strip()
+                if t_name and t_name not in candidates:
+                    candidates.append(t_name)
+            except Exception:
+                pass
+
+    if real_p.parent.name not in {"backgrounds", "theme", "current"} and real_p.parent.name not in candidates:
+        candidates.append(real_p.parent.name)
+    if real_p.stem not in candidates:
+        candidates.append(real_p.stem)
+
+    for slug in candidates:
+        slug_clean = slug.lower().replace(" ", "-")
+        theme_dirs = wallpaper_theme_directories(slug_clean)
+        for td in theme_dirs:
+            toml_file = td / "colors.toml"
+            if toml_file.is_file():
+                try:
+                    with open(toml_file, "rb") as f:
+                        data = tomllib.load(f)
+
+                    mode = data.get("mode", "dark")
+
+                    def get_hex(k, fallback="000000"):
+                        val = data.get(k, fallback)
+                        return str(val).lstrip("#").lower()
+
+                    accent = get_hex("accent", "c026d3")
+                    primary = get_hex("primary", accent)
+                    secondary = get_hex("secondary", get_hex("blue", "6430ba"))
+                    tertiary = get_hex("cyan", "81e0ff")
+                    dark_accent = get_hex("dark_accent", get_hex("muted", "4a2158"))
+
+                    surface = get_hex("background", "121214")
+                    surface_dim = get_hex("darker_background", surface)
+                    surface_lowest = get_hex("dark_background", surface_dim)
+                    surface_container = get_hex("lighter_background", get_hex("selection", "211f21"))
+
+                    on_surface = get_hex("foreground", "f4f4f8")
+                    on_surface_var = get_hex("dark_foreground", "cec3cc")
+                    inverse_surface = get_hex("bright_foreground", "ffffff")
+
+                    red = get_hex("red", "f43f5e")
+                    green = get_hex("green", "10b981")
+                    yellow = get_hex("yellow", "facc15")
+                    blue = get_hex("blue", "4361ee")
+                    magenta = get_hex("magenta", "db2777")
+                    cyan = get_hex("cyan", "81e0ff")
+                    orange = get_hex("orange", "fb923c")
+
+                    c = {
+                        "background": surface,
+                        "onBackground": on_surface,
+                        "surface": surface,
+                        "surfaceDim": surface_dim,
+                        "surfaceBright": surface_container,
+                        "surfaceContainerLowest": surface_lowest,
+                        "surfaceContainerLow": surface_dim,
+                        "surfaceContainer": surface_container,
+                        "surfaceContainerHigh": get_hex("selection", "2c292c"),
+                        "surfaceContainerHighest": surface_container,
+                        "onSurface": on_surface,
+                        "surfaceVariant": surface_container,
+                        "onSurfaceVariant": on_surface_var,
+                        "outline": get_hex("muted", "a49aa6"),
+                        "outlineVariant": surface_container,
+                        "inverseSurface": inverse_surface,
+                        "inverseOnSurface": surface,
+                        "shadow": "000000",
+                        "scrim": "000000",
+                        "surfaceTint": accent,
+                        "primary": accent,
+                        "primaryDim": accent,
+                        "onPrimary": "ffffff",
+                        "primaryContainer": dark_accent,
+                        "onPrimaryContainer": on_surface,
+                        "inversePrimary": accent,
+                        "secondary": secondary,
+                        "secondaryDim": secondary,
+                        "onSecondary": "ffffff",
+                        "secondaryContainer": dark_accent,
+                        "onSecondaryContainer": on_surface,
+                        "tertiary": tertiary,
+                        "tertiaryDim": tertiary,
+                        "onTertiary": "ffffff",
+                        "tertiaryContainer": tertiary,
+                        "onTertiaryContainer": on_surface,
+                        "error": red,
+                        "errorDim": red,
+                        "onError": "690005",
+                        "errorContainer": "93000a",
+                        "onErrorContainer": "ffdad6",
+                        "primaryPaletteKeyColor": accent,
+                        "secondaryPaletteKeyColor": secondary,
+                        "tertiaryPaletteKeyColor": tertiary,
+                        "neutralPaletteKeyColor": surface,
+                        "neutralVariantPaletteKeyColor": surface_container,
+                        "primary_paletteKeyColor": accent,
+                        "secondary_paletteKeyColor": secondary,
+                        "tertiary_paletteKeyColor": tertiary,
+                        "neutral_paletteKeyColor": surface,
+                        "neutral_variant_paletteKeyColor": surface_container,
+                        "term0": surface_lowest,
+                        "term1": red,
+                        "term2": green,
+                        "term3": yellow,
+                        "term4": blue,
+                        "term5": magenta,
+                        "term6": cyan,
+                        "term7": on_surface,
+                        "term8": on_surface_var,
+                        "term9": get_hex("bright_red", red),
+                        "term10": get_hex("bright_green", green),
+                        "term11": get_hex("bright_yellow", yellow),
+                        "term12": get_hex("bright_blue", blue),
+                        "term13": get_hex("bright_magenta", magenta),
+                        "term14": get_hex("bright_cyan", cyan),
+                        "term15": inverse_surface,
+                        "red": red,
+                        "green": green,
+                        "yellow": yellow,
+                        "blue": blue,
+                        "magenta": magenta,
+                        "cyan": cyan,
+                        "peach": orange,
+                        "accent": accent,
+                        "dark_accent": dark_accent,
+                        "rosewater": on_surface,
+                        "flamingo": accent,
+                        "pink": magenta,
+                        "mauve": accent,
+                        "maroon": red,
+                        "teal": green,
+                        "sky": cyan,
+                        "sapphire": blue,
+                        "lavender": secondary,
+                        "text": on_surface,
+                        "subtext1": on_surface_var,
+                        "subtext0": on_surface_var,
+                        "overlay2": surface_container,
+                        "overlay1": surface_container,
+                        "overlay0": surface_container,
+                        "surface2": surface_container,
+                        "surface1": surface_container,
+                        "surface0": surface_dim,
+                        "base": surface,
+                        "mantle": surface,
+                        "crust": surface_lowest,
+                    }
+                    extra = {
+                        "hyprland_active_border": str(data.get("hyprland_active_border", "")),
+                        "hyprland_inactive_border": str(data.get("hyprland_inactive_border", "")),
+                        "active_border_color": str(data.get("active_border_color", "")),
+                    }
+                    return mode, c, slug_clean, extra
+                except Exception as e:
+                    print(f"[wallpaper-sync] Warning reading {toml_file}: {e}", file=sys.stderr)
+    return None
+
+
+def extract_colors(wall_path: Path):
+    # 0. Check if this wallpaper belongs to a theme with an authored colors.toml
+    authored = load_theme_colors_if_available(wall_path)
+    if authored:
+        mode, c, slug, extra = authored
+        print(f"[wallpaper-sync] Using authored theme palette from '{slug}' colors.toml (accent=#{c['accent']}, red=#{c['red']}, green=#{c['green']})")
+        return mode, c, slug, extra
+
+    from PIL import Image
+
+    # 1. Analyze Chroma & Luminance with PIL to detect monochromaticity
+    is_mono = False
+    try:
+        with Image.open(wall_path) as img:
+            thumb = img.convert("RGB")
+            thumb.thumbnail((48, 48))
+            try:
+                pixels = list(thumb.get_flattened_data())
+            except AttributeError:
+                pixels = list(thumb.getdata())
+            chromas = [max(r, g, b) - min(r, g, b) for r, g, b in pixels]
+            max_chroma = max(chromas) if chromas else 0
+            sorted_c = sorted(chromas)
+            p95_chroma = sorted_c[int(len(sorted_c) * 0.95)] if sorted_c else 0
+            # ONLY truly grayscale/monochromatic images have near-zero max chroma and p95 chroma
+            if max_chroma < 18 and p95_chroma < 10:
+                is_mono = True
+    except Exception as e:
+        print(f"[wallpaper-sync] Image analysis warning: {e}", file=sys.stderr)
+
+    # 2. Monochromatic Contrast-Safe Palette (Prevent Caelestia recursion crash & invisible borders)
+    if is_mono:
+        print(f"[wallpaper-sync] Detected monochromatic/grayscale wallpaper ({wall_path.name}). Applying contrast-safe dark palette.")
+        c = {
+            "background": "121214",
+            "onBackground": "f4f4f8",
+            "surface": "121214",
+            "surfaceDim": "121214",
+            "surfaceBright": "303036",
+            "surfaceContainerLowest": "0d0d0f",
+            "surfaceContainerLow": "161618",
+            "surfaceContainer": "1c1c20",
+            "surfaceContainerHigh": "242428",
+            "surfaceContainerHighest": "2c2c32",
+            "surfaceVariant": "26262a",
+            "onSurfaceVariant": "c8c8d0",
+            "primary": "dcdce8",  # High-contrast luminous frost silver for active window borders!
+            "primaryDim": "f0f0fa",
+            "onPrimary": "181820",
+            "primaryContainer": "34343a",
+            "onPrimaryContainer": "eaeaf4",
+            "secondary": "b0b0bc",
+            "secondaryDim": "c8c8d4",
+            "onSecondary": "181820",
+            "secondaryContainer": "28282e",
+            "onSecondaryContainer": "d8d8e4",
+            "tertiary": "9494a2",
+            "tertiaryDim": "b4b4c2",
+            "onTertiary": "181820",
+            "onSurface": "f4f4f8",  # Crisp white text (>12:1 AAA contrast)
+            "outline": "70707a",
+            "outlineVariant": "404048",
+            "inverseSurface": "f4f4f8",
+            "inverseOnSurface": "1a1a20",
+            "error": "ffb4ab",
+            "errorDim": "ff554a",
+            "onError": "690005",
+            "errorContainer": "93000a",
+            "onErrorContainer": "ffdad6",
+            "primary_paletteKeyColor": "dcdce8",
+            "secondary_paletteKeyColor": "b0b0bc",
+            "tertiary_paletteKeyColor": "9494a2",
+            "neutral_paletteKeyColor": "121214",
+            "neutral_variant_paletteKeyColor": "26262a",
+            "term0": "18181c",
+            "term1": "c07078",
+            "term2": "88b888",
+            "term3": "c8b888",
+            "term4": "90909c",  # Neutral silver-slate (NEVER Tokyo Night blue 61afef)
+            "term5": "b090b0",
+            "term6": "80a8a8",
+            "term7": "dcdce8",
+            "term8": "505058",
+            "term9": "d08088",
+            "term10": "98c898",
+            "term11": "d8c898",
+            "term12": "a0a0ac",  # Neutral silver-slate
+            "term13": "c0a0c0",
+            "term14": "90b8b8",
+            "term15": "ffffff",
+            "red": "c07078",
+            "green": "88b888",
+            "yellow": "c8b888",
+            "blue": "90909c",    # Neutral silver-slate
+            "magenta": "b090b0",
+            "cyan": "80a8a8",
+            "peach": "c8b888",
+            "teal": "80a8a8",
+            "mauve": "b090b0",
+            "accent": "dcdce8",
+            "dark_accent": "242428",
+        }
+        return "dark", c
+
+    # 3. Chromatic Wallpapers: Force Dark Mode & Ensure Vibrant Dark UI Shades with Light Text
+    try:
+        from caelestia.utils.wallpaper import get_colours_for_wall
+
+        # no_smart=True forces preservation of dark mode without recursive scoring crash!
+        result = get_colours_for_wall(wall_path, True)
+        colors = result["colours"]
+
+        def lum(hex_code):
+            r, g, b = hex_to_rgb(hex_code)
+            return 0.299 * r + 0.587 * g + 0.114 * b
+
+        # Enforce dark surface for UI (surfaces must be dark, mood-toned)
+        if lum(colors.get("surface", "000000")) > 45:
+            dim = colors.get("surfaceDim")
+            lowest = colors.get("surfaceContainerLowest")
+            if dim and lum(dim) <= 45:
+                colors["surface"] = dim
+            elif lowest and lum(lowest) <= 45:
+                colors["surface"] = lowest
+            else:
+                sr, sg, sb = hex_to_rgb(colors.get("surface", "151315"))
+                colors["surface"] = f"{max(8, sr // 3):02x}{max(8, sg // 3):02x}{max(8, sb // 3):02x}"
+
+        # Enforce dark surfaceContainer
+        if lum(colors.get("surfaceContainer", "000000")) > 65:
+            cr, cg, cb = hex_to_rgb(colors.get("surface", "151315"))
+            colors["surfaceContainer"] = f"{min(255, cr + 14):02x}{min(255, cg + 14):02x}{min(255, cb + 14):02x}"
+
+        # Select authentic vibrant dark shades of the palette (visible dark purple, not near-black)
+        seed_primary = (
+            colors.get("primaryPaletteKeyColor")
+            or colors.get("kvisited")
+            or colors.get("primary")
+            or "a866c5"
+        )
+        seed_secondary = (
+            colors.get("klink")
+            or colors.get("secondaryPaletteKeyColor")
+            or colors.get("secondary")
+            or "9778ca"
+        )
+        seed_tertiary = (
+            colors.get("tertiaryPaletteKeyColor")
+            or colors.get("tertiaryContainer")
+            or colors.get("tertiary")
+            or "be8792"
+        )
+
+        rich_primary = to_vibrant_dark_shade(seed_primary, target_l=0.46, min_s=0.55)
+        rich_secondary = to_vibrant_dark_shade(seed_secondary, target_l=0.46, min_s=0.55)
+        rich_tertiary = to_vibrant_dark_shade(seed_tertiary, target_l=0.46, min_s=0.50)
+        deep_dark_accent = to_vibrant_dark_shade(seed_primary, target_l=0.24, min_s=0.45)
+
+        colors["primary"] = rich_primary
+        colors["secondary"] = rich_secondary
+        colors["tertiary"] = rich_tertiary
+        colors["accent"] = rich_primary
+        colors["dark_accent"] = deep_dark_accent
+
+        colors["primaryContainer"] = to_vibrant_dark_shade(seed_primary, target_l=0.33, min_s=0.48)
+        colors["secondaryContainer"] = to_vibrant_dark_shade(seed_secondary, target_l=0.33, min_s=0.48)
+        colors["tertiaryContainer"] = rich_tertiary
+
+        # Enforce high-contrast light text for dark/black screens (AAA readability)
+        colors["onSurface"] = "f4f4f8"
+        colors["onSurfaceVariant"] = "cec3cc"
+        colors["onBackground"] = "f4f4f8"
+        colors["inverseSurface"] = "f4f4f8"
+        colors["onPrimary"] = "ffffff"
+        colors["onSecondary"] = "ffffff"
+        colors["onTertiary"] = "ffffff"
+        colors["onPrimaryContainer"] = "f4f4f8"
+        colors["onSecondaryContainer"] = "f4f4f8"
+        colors["onTertiaryContainer"] = "f4f4f8"
+        colors["outline"] = "a49aa6"
+        colors["outlineVariant"] = "5a525d"
+
+        return "dark", colors
+    except Exception as e:
+        print(f"[wallpaper-sync] Caelestia extractor warning: {e}", file=sys.stderr)
+
+    # Fallback to pure PIL extraction
+    try:
+        with Image.open(wall_path) as img:
+            img = img.convert("RGB")
+            img.thumbnail((64, 64))
+            colors = img.getcolors(maxcolors=4096)
+            if colors:
+                colors.sort(reverse=True, key=lambda x: x[0])
+                r, g, b = colors[0][1]
+            else:
+                r, g, b = (20, 24, 28)
+            sr, sg, sb = min(32, r // 3), min(32, g // 3), min(32, b // 3)
+            surface = f"{sr:02x}{sg:02x}{sb:02x}"
+            pr, pg, pb = min(255, max(140, r + 40)), min(255, max(140, g + 40)), min(255, max(140, b + 40))
+            primary = f"{pr:02x}{pg:02x}{pb:02x}"
+            c = {
+                "surface": surface,
+                "surfaceDim": surface,
+                "surfaceContainer": f"{min(255, sr + 10):02x}{min(255, sg + 10):02x}{min(255, sb + 10):02x}",
+                "primary": primary,
+                "onSurface": "f0f0f4",
+                "term0": "18181c",
+                "term1": "e06c75",
+                "term2": "98c379",
+                "term3": "e5c07b",
+                "term4": "61afef",
+                "term5": "c678dd",
+                "term6": "56b6c2",
+                "term7": "abb2bf",
+                "term8": "5c6370",
+                "term9": "e06c75",
+                "term10": "98c379",
+                "term11": "e5c07b",
+                "term12": "61afef",
+                "term13": "c678dd",
+                "term14": "56b6c2",
+                "term15": "ffffff",
+            }
+            return "dark", c
+    except Exception as e:
+        print(f"[wallpaper-sync] Fallback extractor failed: {e}", file=sys.stderr)
+        return "dark", {}
+
+
+def sync_foot_terminal(c: dict[str, str], mode: str, wall_name: str):
+    palette_lines = f"""foreground={c['onSurface']}
+background={c['surface']}
+selection-foreground={c['onSurface']}
+selection-background={c.get('surfaceContainerHigh', c.get('surfaceVariant', '262626'))}
+
+cursor={c['surface']} {c['primary']}
+
+regular0={c['term0']}
+regular1={c['term1']}
+regular2={c['term2']}
+regular3={c['term3']}
+regular4={c['term4']}
+regular5={c['term5']}
+regular6={c['term6']}
+regular7={c['term7']}
+
+bright0={c['term8']}
+bright1={c['term9']}
+bright2={c['term10']}
+bright3={c['term11']}
+bright4={c['term12']}
+bright5={c['term13']}
+bright6={c['term14']}
+bright7={c['term15']}"""
+
+    foot_ini_content = f"""# Dynamic Foot Colors adapted from wallpaper: {wall_name}
+[colors-dark]
+{palette_lines}
+
+[colors-light]
+{palette_lines}
+"""
+    # 1. Write wallpaper-foot.ini
+    wp_foot = OMARCHY_STATE / "wallpaper-foot.ini"
+    wp_foot.parent.mkdir(parents=True, exist_ok=True)
+    wp_foot.write_text(foot_ini_content)
+
+    # 2. Also update current theme foot.ini for backward compatibility
+    theme_foot = OMARCHY_STATE / "theme/foot.ini"
+    if theme_foot.parent.is_dir():
+        theme_foot.write_text(foot_ini_content)
+
+    # 3. Generate OSC escape sequences and broadcast to active running terminals
+    sequences = (
+        hex_to_ansi(c["onSurface"], 10)
+        + hex_to_ansi(c["surface"], 11)
+        + hex_to_ansi(c["primary"], 12)
+        + hex_to_ansi(c["primary"], 17)
+        + "".join(hex_to_ansi(c[f"term{i}"], 4, i) for i in range(16))
+    )
+
+    # Inject to /dev/pts/*
+    pts_dir = Path("/dev/pts")
+    if pts_dir.is_dir():
+        for pt in pts_dir.iterdir():
+            if pt.name.isdigit():
+                try:
+                    fd = os.open(str(pt), os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+                    try:
+                        os.write(fd, sequences.encode())
+                    finally:
+                        os.close(fd)
+                except (PermissionError, OSError, BlockingIOError):
+                    pass
+
+    # Inject to child stdout of running foot process
+    try:
+        pgrep_res = subprocess.run(["pgrep", "-x", "foot"], capture_output=True, text=True)
+        if pgrep_res.returncode == 0:
+            for pid_str in pgrep_res.stdout.split():
+                foot_pid = pid_str.strip()
+                child_res = subprocess.run(["pgrep", "-P", foot_pid], capture_output=True, text=True)
+                for cpid in child_res.stdout.split():
+                    fd1 = Path(f"/proc/{cpid.strip()}/fd/1")
+                    if fd1.is_symlink():
+                        target = os.readlink(str(fd1))
+                        if target.startswith("/dev/pts/"):
+                            try:
+                                fd = os.open(target, os.O_WRONLY | os.O_NONBLOCK | os.O_NOCTTY)
+                                try:
+                                    os.write(fd, sequences.encode())
+                                finally:
+                                    os.close(fd)
+                            except (PermissionError, OSError, BlockingIOError):
+                                pass
+    except Exception:
+        pass
+
+
+def sync_browsers(c: dict[str, str]):
+    surface_hex = c["surface"].lstrip("#").lower()
+    if len(surface_hex) == 6:
+        # 1. Update browser policy using privileged passwordless helper
+        policy_bin = "/usr/bin/omarchy-theme-set-browser-policy"
+        if os.path.isfile(policy_bin):
+            subprocess.run([policy_bin, surface_hex], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        # 2. Update chromium.theme for Omarchy
+        r, g, b = hex_to_rgb(surface_hex)
+        cr_theme = OMARCHY_STATE / "theme/chromium.theme"
+        if cr_theme.parent.is_dir():
+            cr_theme.write_text(f"{r},{g},{b}\n")
+
+        # 3. Synchronize user profile preferences for Brave & Chromium
+        argb = -16777216 | (r << 16) | (g << 8) | b  # Signed 32-bit 0xFF000000 | RGB
+        prefs_candidates = [
+            HOME / ".config/BraveSoftware/Brave-Browser/Default/Preferences",
+            HOME / ".config/BraveSoftware/Brave-Browser/Default/Default/Preferences",
+            HOME / ".config/chromium/Default/Preferences",
+            HOME / ".config/google-chrome/Default/Preferences",
+        ]
+        for p in prefs_candidates:
+            if p.is_file():
+                try:
+                    p_data = json.loads(p.read_text(encoding="utf-8"))
+                    p_mod = False
+                    if "extensions" in p_data and "theme" in p_data["extensions"]:
+                        if p_data["extensions"]["theme"].get("id") == "user_color_theme_id":
+                            del p_data["extensions"]["theme"]
+                            p_mod = True
+                    if "browser" not in p_data:
+                        p_data["browser"] = {}
+                    if "theme" not in p_data["browser"]:
+                        p_data["browser"]["theme"] = {}
+                    if p_data["browser"]["theme"].get("user_color2") != argb:
+                        p_data["browser"]["theme"]["user_color2"] = argb
+                        p_mod = True
+                    if not p_data["browser"]["theme"].get("follows_system_colors"):
+                        p_data["browser"]["theme"]["follows_system_colors"] = True
+                        p_mod = True
+                    if p_mod:
+                        p.write_text(json.dumps(p_data), encoding="utf-8")
+                except Exception as p_err:
+                    print(f"[wallpaper-sync] Browser pref update warning: {p_err}", file=sys.stderr)
+
+        # 4. Refresh running browsers non-blockingly
+        for b_cmd in ["brave", "chromium", "google-chrome-stable", "google-chrome", "brave-origin"]:
+            if shutil.which(b_cmd):
+                subprocess.Popen(
+                    [b_cmd, "--refresh-platform-policy", "--no-startup-window"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+
+        # 5. Trigger standard Omarchy browser sync helper
+        if os.path.isfile("/usr/bin/omarchy-theme-set-browser"):
+            subprocess.Popen(
+                ["/usr/bin/omarchy-theme-set-browser"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+
+
+def sync_caelestia(c: dict[str, str], mode: str, wall_path: Path):
+    try:
+        from caelestia.utils.paths import wallpaper_link_path, wallpaper_path_path
+        from caelestia.utils.scheme import Scheme, get_scheme
+        from caelestia.utils.theme import apply_colours
+
+        # Update wallpaper reference files
+        wallpaper_path_path.parent.mkdir(parents=True, exist_ok=True)
+        wallpaper_path_path.write_text(str(wall_path) + "\n")
+        wallpaper_link_path.unlink(missing_ok=True)
+        wallpaper_link_path.symlink_to(wall_path)
+
+        # Explicitly write current.lua with the new colors
+        HYPR_SCHEME_DIR.mkdir(parents=True, exist_ok=True)
+        lua_lines = ["return {"]
+        for k, v in c.items():
+            if k not in ("hyprland_active_border", "hyprland_inactive_border", "active_border_color"):
+                lua_lines.append(f'  {k} = "{v}",')
+        lua_lines.append("}\n")
+        (HYPR_SCHEME_DIR / "current.lua").write_text("\n".join(lua_lines))
+
+        # Update scheme.json in state for Caelestia Quickshell Colours singleton
+        c_scheme = CAELESTIA_STATE / "scheme.json"
+        c_scheme.parent.mkdir(parents=True, exist_ok=True)
+        scheme = get_scheme()
+        scheme_data = {
+            "name": "dynamic",
+            "flavour": scheme.flavour,
+            "mode": mode,
+            "variant": scheme.variant,
+            "colours": c,
+        }
+        c_scheme.write_text(json.dumps(scheme_data))
+
+        # Apply GTK, Qt, Fuzzel, Cava, Hyprland scheme with guard to avoid recursive hooks
+        old_guard = os.environ.get("CAELESTIA_SYNC_IN_PROGRESS")
+        os.environ["CAELESTIA_SYNC_IN_PROGRESS"] = "1"
+        try:
+            apply_colours(c, mode)
+        finally:
+            if old_guard is None:
+                os.environ.pop("CAELESTIA_SYNC_IN_PROGRESS", None)
+            else:
+                os.environ["CAELESTIA_SYNC_IN_PROGRESS"] = old_guard
+    except Exception as e:
+        print(f"[wallpaper-sync] Caelestia sync warning: {e}", file=sys.stderr)
+
+
+def sync_omarchy_colors_and_ides(c: dict[str, str], mode: str, slug: str | None = None):
+    # If this is an authored theme, ensure the pristine colors.toml is in place
+    if slug:
+        for td in wallpaper_theme_directories(slug):
+            orig = td / "colors.toml"
+            if orig.is_file():
+                dest = OMARCHY_STATE / "theme/colors.toml"
+                if dest.parent.is_dir():
+                    try:
+                        shutil.copy2(str(orig), str(dest))
+                    except Exception as e:
+                        print(f"[wallpaper-sync] Warning restoring colors.toml: {e}", file=sys.stderr)
+                break
+    else:
+        # Only synthesize colors.toml for un-themed custom wallpapers
+        surface = f"#{c['surface']}"
+        on_surface = f"#{c['onSurface']}"
+        rich_accent = c.get("primary") or c.get("accent") or "9434b5"
+        accent = f"#{rich_accent.lstrip('#')}"
+        rich_secondary = c.get("secondary") or "6430ba"
+        secondary = f"#{rich_secondary.lstrip('#')}"
+        rich_tertiary = c.get("tertiary") or "3485b5"
+        dark_accent = f"#{c.get('dark_accent', '431652').lstrip('#')}"
+
+        colors_toml_content = f"""mode = "{mode}"
+
+accent = "{accent}"
+primary = "{accent}"
+secondary = "{secondary}"
+dark_accent = "{dark_accent}"
+selection = "#{c.get('surfaceContainerHigh', '2c292c')}"
+muted = "#{c.get('outline', 'a49aa6')}"
+
+background = "{surface}"
+dark_background = "#{c.get('surfaceContainerLowest', '100d10')}"
+darker_background = "#{c.get('surfaceDim', '151315')}"
+lighter_background = "#{c.get('surfaceContainer', '211f21')}"
+
+foreground = "{on_surface}"
+dark_foreground = "#{c.get('onSurfaceVariant', 'cec3cc')}"
+light_foreground = "{on_surface}"
+bright_foreground = "#{c.get('inverseSurface', 'FFFFFF')}"
+
+red = "#{c.get('red', c.get('term1', 'FF5345'))}"
+yellow = "#{c.get('yellow', c.get('term3', 'E5C736'))}"
+orange = "#{c.get('peach', c.get('term3', 'A2734B'))}"
+green = "#{c.get('green', c.get('term2', '549E6A'))}"
+cyan = "#{rich_tertiary.lstrip('#')}"
+blue = "{secondary}"
+magenta = "{accent}"
+brown = "#{c.get('peach', '513925')}"
+
+bright_red = "#{c.get('term9', 'DB9F9C')}"
+bright_yellow = "#{c.get('term11', 'E5C736')}"
+bright_green = "#{c.get('term10', '63B07A')}"
+bright_cyan = "#{c.get('term14', '8CD3CB')}"
+bright_blue = "#{c.get('term12', 'ACD4CF')}"
+"""
+
+        colors_toml_path = OMARCHY_STATE / "theme/colors.toml"
+        if colors_toml_path.parent.is_dir():
+            colors_toml_path.write_text(colors_toml_content)
+
+    # Trigger omarchy-theme-sync for Antigravity & VS Code
+    theme_sync_bin = HOME / ".local/bin/omarchy-theme-sync"
+    if theme_sync_bin.is_file():
+        subprocess.Popen(
+            [str(theme_sync_bin), "sync"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def sync_hyprland(c: dict[str, str], extra: dict[str, str] | None = None):
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+        primary = c.get("primary", "dcdce8")
+        secondary = c.get("secondary", "b0b0bc")
+        container = c.get("surfaceContainer", "202020")
+        active_b = (extra or {}).get("hyprland_active_border")
+        inactive_b = (extra or {}).get("hyprland_inactive_border")
+        if not active_b:
+            active_b = f"rgba({primary}ee) rgba({secondary}cc) 45deg"
+        if not inactive_b:
+            inactive_b = f"rgba({container}77)"
+        subprocess.run(
+            ["hyprctl", "keyword", "general:col.active_border", active_b],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["hyprctl", "keyword", "general:col.inactive_border", inactive_b],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.Popen(["hyprctl", "reload"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def automatic_signature(wall_path):
+    theme = (OMARCHY_STATE / "theme.name").read_text().strip()
+    h = hashlib.sha256((str(wall_path) + theme + os.environ.get("HYPRLAND_INSTANCE_SIGNATURE", "")).encode())
+    stat = wall_path.stat()
+    h.update(str((stat.st_size, stat.st_mtime_ns)).encode())
+    # Include palette inputs, not generated app settings. Inline palette edits
+    # trigger a fresh sync; an identical event does not reload apps again.
+    for path in [OMARCHY_STATE / "theme/colors.toml", *[p / "colors.toml" for p in wallpaper_theme_directories(theme)],
+                 HOME / ".config/omarchy/theme-sync/config.json"]:
+        if path.is_file():
+            if path.name == "config.json":
+                value = json.loads(path.read_text())
+                value.pop("lastSync", None)
+                h.update(json.dumps(value, sort_keys=True).encode())
+            else:
+                h.update(path.read_bytes())
+    return h.hexdigest()
+
+
+def main():
+    lock_file = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "omarchy-wallpaper-theme-sync.lock"
+    lock_fd = None
+    try:
+        lock_file.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o644)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+    except Exception as e:
+        print(f"[wallpaper-sync] Warning acquiring lock: {e}", file=sys.stderr)
+
+    try:
+        arg_wall = sys.argv[1] if len(sys.argv) > 1 else None
+        wall_path = resolve_wallpaper_path(arg_wall)
+
+        if not wall_path:
+            print("[wallpaper-sync] No wallpaper found to synchronize.", file=sys.stderr)
+            sys.exit(1)
+
+        marker = CAELESTIA_STATE / "last-automatic-palette.sha256"
+        automatic = os.environ.get("OMARCHY_THEME_SYNC_AUTOMATIC") == "1"
+        signature = automatic_signature(wall_path) if automatic else None
+        if automatic and marker.is_file() and marker.read_text().strip() == signature and (HOME / ".config/gtk-4.0/gtk.css").is_file():
+            print("[wallpaper-sync] Palette already synchronized; skipping duplicate event.")
+            return
+        process_path = extract_frame_if_video(wall_path)
+        res = extract_colors(process_path)
+        slug = None
+        extra = {}
+        if len(res) == 4:
+            mode, c, slug, extra = res
+        elif len(res) == 3:
+            mode, c, slug = res
+        else:
+            mode, c = res
+        if not c:
+            print("[wallpaper-sync] Failed to extract colors.", file=sys.stderr)
+            sys.exit(1)
+
+        if slug:
+            try:
+                (OMARCHY_STATE / "theme.name").write_text(f"{slug}\n")
+                (CAELESTIA_STATE / "omarchy-theme.name").write_text(f"{slug}\n")
+            except Exception:
+                pass
+
+        print(f"[wallpaper-sync] Adapting apps to wallpaper: {wall_path.name} (theme={slug}, mode={mode}, surface=#{c['surface']}, primary=#{c['primary']})")
+
+        # 1. Foot terminal sync
+        sync_foot_terminal(c, mode, wall_path.name)
+
+        # 2. Browser sync (Brave / Chrome / Chromium)
+        sync_browsers(c)
+
+        # 3. Caelestia (DaemonOS) sync (GTK 3/4, Fuzzel, Qt, current.lua, scheme.json)
+        sync_caelestia(c, mode, wall_path)
+
+        # 4. Omarchy colors & IDEs (Antigravity GUI, Antigravity IDE, VS Code)
+        sync_omarchy_colors_and_ides(c, mode, slug)
+
+        # 5. Hyprland compositor reload for borders
+        sync_hyprland(c, extra)
+
+        # 6. User hooks
+        hook_bin = shutil.which("omarchy-hook")
+        if hook_bin:
+            subprocess.Popen(
+                [hook_bin, "wallpaper-set", str(wall_path), c["surface"], c["primary"]],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        if automatic:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            # Recompute after authored colors.toml has been restored.
+            temporary = marker.with_suffix(".tmp")
+            temporary.write_text(automatic_signature(wall_path))
+            temporary.replace(marker)
+        print("[wallpaper-sync] Application wallpaper adaptation complete.")
+    finally:
+        if lock_fd is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+            except Exception:
+                pass
+
+
+if __name__ == "__main__":
+    main()

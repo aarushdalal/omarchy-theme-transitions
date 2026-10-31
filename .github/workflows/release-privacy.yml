@@ -9,3 +9,8 @@ jobs:
         with:
           python-version: "3.11"
       - run: python3 tools/release_privacy_check.py
+      - run: python3 -m pip install Pillow
+      - name: Wallpaper manager backend regression checks
+        env:
+          PYTHONPATH: reference/wallpaper-manager
+        run: python3 -m unittest discover -s reference/wallpaper-manager/tests -p 'test_*.py'

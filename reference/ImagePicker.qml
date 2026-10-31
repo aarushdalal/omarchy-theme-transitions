@@ -2,9 +2,11 @@ import Quickshell
 import Quickshell.Io
 import Quickshell.Wayland
 import QtQuick
+import QtQuick.Window
 import QtQuick.Effects
 import QtQuick.Shapes
 import qs.Commons
+import qs.Commons as ShellCommons
 import "ImagePickerModel.js" as ImagePickerModel
 
 Item {
@@ -25,6 +27,20 @@ Item {
     if (isUnlockGallery) return "Set Unlock Screen"
     if (root.showLabels) return "Apply Theme"
     return "Set Wallpaper"
+  }
+
+  property var themeSummary: ({})
+  readonly property int totalWallpaperCount: showLabels && Number(themeSummary.total_wallpapers) > 0 ? Number(themeSummary.total_wallpapers) : imageArray.length
+  readonly property string countLabel: totalWallpaperCount + (totalWallpaperCount === 1 ? " wallpaper" : " wallpapers")
+  readonly property string countScope: filterText ? filterPositions.filter(function(p) { return p >= 0 }).length + " matches" : themeSummary.mode === "groups" ? themeSummary.group_count + " groups" : themeSummary.mode === "themes" ? imageArray.length + " in this group" : "All themes"
+  FileView {
+    id: countMetadata
+    path: root.showLabels && root.imageArray.length ? String(root.imageArray[0].filePath).replace(/\/[^/]*$/, "/.selector-info.json") : ""
+    watchChanges: true
+    printErrors: false
+    onLoaded: { try { root.themeSummary = JSON.parse(text()) } catch (e) { root.themeSummary = ({}) } }
+    onLoadFailed: root.themeSummary = ({})
+    onFileChanged: reload()
   }
 
   property string imageRows: ""
@@ -59,7 +75,9 @@ Item {
   }
 
   readonly property string currentAnimationStyle: Motion.activePreset
-  readonly property int animDuration: Motion.entryDuration
+  readonly property int animDuration: Motion.reducedMotion ? 1 : Math.min(180, Motion.entryDuration)
+  readonly property int moveDuration: Motion.reducedMotion ? 1 : Math.min(180, Math.round(Motion.liquidMoveDuration * 0.65))
+  readonly property var filterPositions: ImagePickerModel.positions(root.imageArray, root.filterText)
   readonly property var animEasingType: Motion.easeExpressive
   readonly property real animOvershoot: Motion.springOvershoot
   readonly property string animStyleDisplay: Motion.presetHumanName(Motion.activePreset)
@@ -94,24 +112,38 @@ Item {
     easing.overshoot: root.animOvershoot
   }
 
-  // Palette & Dimension Tokens
-  property color dimColor: Color.background
-  property color foreground: Color.imagePicker.text
-  property color scrim: Color.imagePicker.scrim
-  property color selectedBorder: Color.imagePicker.selectedBorder
-  property color unselectedBorder: Color.imagePicker.unselectedBorder
-  property color accentColor: Color.accent || Color.foreground
+  // Read-only diagnostics let maintenance verify the loaded version without opening it.
+  IpcHandler {
+    target: "daemon0-gallery-performance"
+    function status(): string {
+      return JSON.stringify({revision: 4, wallpaperCount: root.totalWallpaperCount, countLabel: root.countLabel, scope: root.countScope, cards: root.imageArray.length, layout: "native-cards", opened: root.opened,
+        preset: Motion.activePreset, reducedMotion: Motion.reducedMotion,
+        entranceMs: root.animDuration, movementMs: root.moveDuration,
+        previewLimit: 5, boundedLayers: true, hiddenCardAnimations: false,
+        directBackdrop: true, originalSources: true, pixelRatio: root.previewPixelRatio})
+    }
+  }
 
-  property int expandedWidth: Math.min(940, panel.width ? panel.width - Style.space(80) : 940)
-  property int expandedHeight: Math.min(528, panel.height ? panel.height - Style.space(160) : 528)
-  property int sliceWidth: Math.max(160, Math.round(expandedWidth * 0.20))
-  property int sliceHeight: Math.round(expandedHeight * 0.82)
-  property int sliceSpacing: Style.space(18)
+  // Palette & Dimension Tokens
+  property color dimColor: ShellCommons.Color.background
+  property color foreground: ShellCommons.Color.imagePicker.text
+  property color scrim: ShellCommons.Color.imagePicker.scrim
+  property color selectedBorder: ShellCommons.Color.imagePicker.selectedBorder
+  property color unselectedBorder: ShellCommons.Color.imagePicker.unselectedBorder
+  property color accentColor: ShellCommons.Color.accent || ShellCommons.Color.foreground
+
+  readonly property real previewPixelRatio: Math.max(1, panel.Screen.devicePixelRatio)
+
+  property int expandedWidth: Math.min(820, panel.width ? panel.width * 0.66 : 820)
+  property int expandedHeight: Math.min(Math.round(expandedWidth * 9 / 16), panel.height ? panel.height - Style.space(190) : 462)
+  property int sliceWidth: Math.max(128, Math.min(180, Math.round(expandedWidth * 0.20)))
+  property int sliceHeight: Math.round(expandedHeight * 0.86)
+  property int sliceSpacing: Style.space(12)
   property int skewOffset: 0
-  property int bottomChromeHeight: showLabels ? (filterable ? 110 : 80) : (filterable ? 75 : 45)
+  property int bottomChromeHeight: showLabels ? 64 : 56
 
   function scriptPath(name) {
-    return omarchyPath + "/shell/plugins/image-picker/" + name
+    return Quickshell.env("HOME") + "/.config/omarchy/plugins/daemon0.image-picker/" + name
   }
 
   function focusPicker() {
@@ -146,7 +178,7 @@ Item {
   }
 
   function itemMatches(index) {
-    return ImagePickerModel.itemMatches(imageArray, index, filterText)
+    return index >= 0 && index < filterPositions.length && filterPositions[index] >= 0
   }
 
   function firstMatchingIndex() {
@@ -154,11 +186,11 @@ Item {
   }
 
   function filteredPosition(index) {
-    return ImagePickerModel.filteredPosition(imageArray, index, filterText)
+    return index >= 0 && index < filterPositions.length ? filterPositions[index] : -1
   }
 
   function selectedFilteredPosition() {
-    return ImagePickerModel.selectedFilteredPosition(imageArray, selectedIndex, filterText)
+    return itemMatches(selectedIndex) ? filteredPosition(selectedIndex) : 0
   }
 
   function select(index, immediate) {
@@ -272,6 +304,7 @@ Item {
 
     requestSerial += 1
 
+    themeSummary = ({})
     imageDirs = nextImageDirs
     imageRows = nextImageRows
     selectedImage = nextSelectedImage
@@ -282,6 +315,7 @@ Item {
     filterable = nextFilterable === true || nextFilterable === "true"
     filterText = ""
     layoutSettled = false
+    if (countMetadata.path) countMetadata.reload()
 
     if (imageRows && imageRows === loadedImageRows && imageArray.length > 0) {
       root.select(root.selectedImageIndex(), true)
@@ -425,11 +459,9 @@ Item {
     Rectangle {
       anchors.fill: parent
       visible: root.opened && root.imagesLoaded
-      color: Util.alpha(root.scrim, 0.88 * root.entryProgress)
-
-      Behavior on color {
-        ColorAnimation { duration: 250 }
-      }
+      // Follow the entrance directly; a second animation trails each frame.
+      color: Util.alpha(root.scrim, 1.0)
+      opacity: Math.max(0.0, Math.min(0.88, 0.88 * root.entryProgress))
     }
 
     // Soft Radial Ambient Glow centered behind active card
@@ -457,7 +489,7 @@ Item {
     Item {
       id: card
       visible: root.isPresented
-      width: Math.min(parent.width - 40, root.expandedWidth + 13 * (root.sliceWidth + root.sliceSpacing) + 60)
+      width: Math.min(parent.width - 40, root.expandedWidth + 4 * (root.sliceWidth + root.sliceSpacing) + 60)
       height: root.expandedHeight + Style.space(90) + root.bottomChromeHeight
       transformOrigin: (Motion.activePreset === "bloom") ? Item.Center : ((Motion.activePreset === "ignition") ? Item.Bottom : Item.Top)
       y: Math.round((parent.height - height) / 2) + Math.round((1.0 - root.entryProgress) * Motion.entryYOffset)
@@ -476,8 +508,8 @@ Item {
         width: Math.min(parent.width - 60, root.expandedWidth + 80)
         height: Style.space(48)
         radius: Style.space(24)
-        color: Util.alpha(Color.background, 0.82)
-        border.color: Util.alpha(Color.foreground, 0.16)
+        color: Util.alpha(ShellCommons.Color.background, 0.82)
+        border.color: Util.alpha(ShellCommons.Color.foreground, 0.16)
         border.width: 1
 
         Row {
@@ -522,7 +554,7 @@ Item {
             Text {
               id: itemsCountText
               anchors.centerIn: parent
-              text: (root.imageArray.length) + " Total"
+              text: root.countLabel
               color: root.foreground
               font.pixelSize: Style.font.caption
               font.weight: Font.DemiBold
@@ -530,14 +562,15 @@ Item {
             }
           }
 
-          // Dynamic Animation Style Badge
+          // Gallery scope (or animation style for the wallpaper gallery).
           Rectangle {
+            visible: topHud.width >= Style.space(850) || !root.filterable
             anchors.verticalCenter: parent.verticalCenter
             height: Style.space(22)
             width: animStyleText.width + Style.space(16)
             radius: Style.space(11)
-            color: Util.alpha(Color.foreground, 0.08)
-            border.color: Util.alpha(Color.foreground, 0.14)
+            color: Util.alpha(ShellCommons.Color.foreground, 0.08)
+            border.color: Util.alpha(ShellCommons.Color.foreground, 0.14)
             border.width: 1
 
             Row {
@@ -554,7 +587,7 @@ Item {
               }
 
               Text {
-                text: root.animStyleDisplay
+                text: root.showLabels || root.filterText ? root.countScope : root.animStyleDisplay
                 color: Util.alpha(root.foreground, 0.85)
                 font.pixelSize: Style.font.caption
                 font.weight: Font.Medium
@@ -574,8 +607,8 @@ Item {
           height: Style.space(32)
           width: Math.min(260, parent.width * 0.35)
           radius: Style.space(16)
-          color: root.filterText ? Util.alpha(root.selectedBorder, 0.15) : Util.alpha(Color.foreground, 0.06)
-          border.color: root.filterText ? root.selectedBorder : Util.alpha(Color.foreground, 0.15)
+          color: root.filterText ? Util.alpha(root.selectedBorder, 0.15) : Util.alpha(ShellCommons.Color.foreground, 0.06)
+          border.color: root.filterText ? root.selectedBorder : Util.alpha(ShellCommons.Color.foreground, 0.15)
           border.width: 1
 
           Behavior on color { ColorAnimation { duration: 180 } }
@@ -621,7 +654,7 @@ Item {
         anchors.bottom: parent.bottom
         anchors.bottomMargin: root.bottomChromeHeight
         anchors.horizontalCenter: parent.horizontalCenter
-        width: root.expandedWidth + 13 * (root.sliceWidth + root.sliceSpacing)
+        width: root.expandedWidth + 4 * (root.sliceWidth + root.sliceSpacing)
         clip: false
         focus: true
 
@@ -674,9 +707,8 @@ Item {
             readonly property bool matched: root.itemMatches(index)
             readonly property int relativeIndex: root.filteredPosition(index) - root.selectedFilteredPosition()
             readonly property bool selected: matched && index === root.selectedIndex
-            readonly property bool nearby: matched && Math.abs(relativeIndex) <= 16
-            property bool sourceActivated: nearby
-            onNearbyChanged: if (nearby) sourceActivated = true
+            readonly property bool nearby: matched && Math.abs(relativeIndex) <= 2
+            readonly property bool sourceActivated: root.opened && nearby
 
             // Hover state on side cards
             property bool isHovered: false
@@ -701,50 +733,50 @@ Item {
             opacity: itemOpacity
             z: selected ? 100 : (isHovered ? 80 : 50 - Math.min(Math.abs(relativeIndex), 40))
 
-            Behavior on x {
+            Behavior on x { enabled: root.opened && root.layoutSettled && item.nearby;
               NumberAnimation {
-                duration: Motion.liquidMoveDuration
+                duration: root.moveDuration
                 easing.type: Motion.easeExpressive
                 easing.overshoot: Motion.springOvershoot
               }
             }
-            Behavior on y {
+            Behavior on y { enabled: root.opened && root.layoutSettled && item.nearby;
               NumberAnimation {
-                duration: Motion.liquidMoveDuration
+                duration: root.moveDuration
                 easing.type: Motion.easeExpressive
                 easing.overshoot: Motion.springOvershoot
               }
             }
-            Behavior on width {
+            Behavior on width { enabled: root.opened && root.layoutSettled && item.nearby;
               NumberAnimation {
-                duration: Motion.liquidMoveDuration
+                duration: root.moveDuration
                 easing.type: Motion.easeExpressive
                 easing.overshoot: Motion.springOvershoot
               }
             }
-            Behavior on height {
+            Behavior on height { enabled: root.opened && root.layoutSettled && item.nearby;
               NumberAnimation {
-                duration: Motion.liquidMoveDuration
+                duration: root.moveDuration
                 easing.type: Motion.easeExpressive
                 easing.overshoot: Motion.springOvershoot
               }
             }
-            Behavior on opacity {
+            Behavior on opacity { enabled: root.opened && root.layoutSettled && item.nearby;
               NumberAnimation {
-                duration: Math.round(Motion.liquidMoveDuration * 0.75)
+                duration: Math.round(root.moveDuration * 0.75)
                 easing.type: Motion.easeMicro
               }
             }
-            Behavior on scale {
+            Behavior on scale { enabled: root.opened && root.layoutSettled && item.nearby;
               NumberAnimation {
-                duration: Motion.liquidMoveDuration
+                duration: root.moveDuration
                 easing.type: Motion.easeExpressive
                 easing.overshoot: Motion.springOvershoot
               }
             }
-            Behavior on rotation {
+            Behavior on rotation { enabled: root.opened && root.layoutSettled && item.nearby;
               NumberAnimation {
-                duration: Motion.liquidMoveDuration
+                duration: root.moveDuration
                 easing.type: Motion.easeExpressive
               }
             }
@@ -754,13 +786,15 @@ Item {
               id: maskShape
               anchors.fill: parent
               visible: false
-              layer.enabled: true
+              layer.enabled: root.opened && item.nearby
+              layer.textureSize: Qt.size(Math.ceil(item.itemWidth * root.previewPixelRatio), Math.ceil(item.itemHeight * root.previewPixelRatio))
               radius: item.cardRadius
             }
 
             Item {
               anchors.fill: parent
-              layer.enabled: true
+              layer.enabled: root.opened && item.nearby
+              layer.textureSize: Qt.size(Math.ceil(item.itemWidth * root.previewPixelRatio), Math.ceil(item.itemHeight * root.previewPixelRatio))
               layer.smooth: true
               layer.effect: MultiEffect {
                 maskEnabled: true
@@ -773,13 +807,14 @@ Item {
               Image {
                 id: image
                 anchors.fill: parent
-                source: item.sourceActivated && item.thumbnailPath ? Util.fileUrl(item.thumbnailPath) : ""
+                source: item.sourceActivated && item.filePath ? Util.fileUrl(item.filePath) : ""
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
-                sourceSize.width: item.selected ? root.expandedWidth : (root.sliceWidth * 2)
-                sourceSize.height: item.selected ? root.expandedHeight : (root.sliceHeight * 2)
+                // Decode a stable full-card width at the physical display resolution.
+                sourceSize.width: Math.ceil(root.expandedWidth * root.previewPixelRatio)
                 cache: true
                 smooth: true
+                mipmap: true
               }
 
               // Ambient Tint / Dimmer for non-selected items
@@ -787,7 +822,7 @@ Item {
                 anchors.fill: parent
                 color: Util.alpha(root.dimColor, item.selected ? 0 : (item.isHovered ? 0.20 : 0.44))
 
-                Behavior on color {
+                Behavior on color { enabled: root.opened && root.layoutSettled && item.nearby;
                   ColorAnimation { duration: 180 }
                 }
               }
@@ -801,8 +836,8 @@ Item {
                 height: Math.round(parent.height * 0.40)
                 gradient: Gradient {
                   GradientStop { position: 0.0; color: "transparent" }
-                  GradientStop { position: 0.6; color: Util.alpha(Color.background, 0.45) }
-                  GradientStop { position: 1.0; color: Util.alpha(Color.background, 0.85) }
+                  GradientStop { position: 0.6; color: Util.alpha(ShellCommons.Color.background, 0.45) }
+                  GradientStop { position: 1.0; color: Util.alpha(ShellCommons.Color.background, 0.85) }
                 }
               }
             }
@@ -816,8 +851,8 @@ Item {
               border.width: item.selected ? 3 : 1
               antialiasing: true
 
-              Behavior on border.color { ColorAnimation { duration: 180 } }
-              Behavior on border.width { NumberAnimation { duration: 180 } }
+              Behavior on border.color { enabled: root.opened && root.layoutSettled && item.nearby; ColorAnimation { duration: 180 } }
+              Behavior on border.width { enabled: root.opened && root.layoutSettled && item.nearby; NumberAnimation { duration: 180 } }
             }
 
             // Top Status Badges on Hero Card
@@ -869,8 +904,8 @@ Item {
                 height: Style.space(28)
                 width: previewBadgeText.width + Style.space(18)
                 radius: Style.space(14)
-                color: Util.alpha(Color.background, 0.80)
-                border.color: Util.alpha(Color.foreground, 0.22)
+                color: Util.alpha(ShellCommons.Color.background, 0.80)
+                border.color: Util.alpha(ShellCommons.Color.foreground, 0.22)
                 border.width: 1
 
                 Text {
@@ -894,8 +929,8 @@ Item {
               anchors.margins: Style.space(16)
               height: Style.space(68)
               radius: Style.space(20)
-              color: Util.alpha(Color.background, 0.85)
-              border.color: Util.alpha(Color.foreground, 0.16)
+              color: Util.alpha(ShellCommons.Color.background, 0.85)
+              border.color: Util.alpha(ShellCommons.Color.foreground, 0.16)
               border.width: 1
 
               Row {
@@ -938,8 +973,8 @@ Item {
                   color: applyMouseArea.containsMouse ? root.selectedBorder : Util.alpha(root.selectedBorder, 0.85)
                   scale: applyMouseArea.pressed ? 0.95 : (applyMouseArea.containsMouse ? 1.04 : 1.0)
 
-                  Behavior on scale { NumberAnimation { duration: 120 } }
-                  Behavior on color { ColorAnimation { duration: 150 } }
+                  Behavior on scale { enabled: root.opened && root.layoutSettled && item.nearby; NumberAnimation { duration: 120 } }
+                  Behavior on color { enabled: root.opened && root.layoutSettled && item.nearby; ColorAnimation { duration: 150 } }
 
                   Row {
                     id: applyButtonContent
@@ -948,7 +983,7 @@ Item {
 
                     Text {
                       text: "󰌑"
-                      color: Color.background
+                      color: ShellCommons.Color.background
                       font.pixelSize: Style.font.body
                       font.family: Style.font.menuFamily
                       font.weight: Font.Bold
@@ -957,7 +992,7 @@ Item {
 
                     Text {
                       text: root.applyButtonText
-                      color: Color.background
+                      color: ShellCommons.Color.background
                       font.pixelSize: Style.font.body
                       font.weight: Font.Bold
                       font.family: Style.font.menuFamily
@@ -1000,8 +1035,8 @@ Item {
         height: Style.space(36)
         width: bottomRow.width + Style.space(32)
         radius: Style.space(18)
-        color: Util.alpha(Color.background, 0.85)
-        border.color: Util.alpha(Color.foreground, 0.14)
+        color: Util.alpha(ShellCommons.Color.background, 0.85)
+        border.color: Util.alpha(ShellCommons.Color.foreground, 0.14)
         border.width: 1
 
         Row {
@@ -1016,13 +1051,13 @@ Item {
               height: Style.space(18)
               width: Style.space(34)
               radius: Style.space(4)
-              color: Util.alpha(Color.foreground, 0.12)
+              color: Util.alpha(ShellCommons.Color.foreground, 0.12)
               Text { anchors.centerIn: parent; text: "◄ ►"; color: root.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
             }
             Text { text: "Navigate"; color: Util.alpha(root.foreground, 0.7); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
           }
 
-          Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
+          Rectangle { width: 1; height: Style.space(12); color: Util.alpha(ShellCommons.Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
           Row {
             spacing: Style.space(6)
@@ -1037,7 +1072,7 @@ Item {
             Text { text: "Select Theme"; color: Util.alpha(root.foreground, 0.7); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
           }
 
-          Rectangle { width: 1; height: Style.space(12); color: Util.alpha(Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
+          Rectangle { width: 1; height: Style.space(12); color: Util.alpha(ShellCommons.Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
           Row {
             spacing: Style.space(6)
@@ -1046,7 +1081,7 @@ Item {
               height: Style.space(18)
               width: Style.space(32)
               radius: Style.space(4)
-              color: Util.alpha(Color.foreground, 0.12)
+              color: Util.alpha(ShellCommons.Color.foreground, 0.12)
               Text { anchors.centerIn: parent; text: "Esc"; color: root.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
             }
             Text { text: "Close"; color: Util.alpha(root.foreground, 0.7); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }

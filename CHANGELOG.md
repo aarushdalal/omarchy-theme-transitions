@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.0] - 2026-10-31
+
+- Add the optional Wallpaper Manager reference with mounted-drive places, folder checkboxes, Ctrl/Shift ranges and selections retained across drives.
+- Scan several folders together into independent queue batches, each with an explicit group dropdown and its own source path. Handle inaccessible folders independently and de-duplicate overlapping selections.
+- Include durable serial background jobs, per-item results, recoverable management and stdin transport for large import queues with visible startup failures.
+- Update the native gallery reference and its missing companions; show wallpaper totals in both galleries, with group counts and search scope kept separate.
+- Qualify palette imports for Qt 6.12 compatibility. Keep setup home-relative, include decoder attribution and portable tests, and preserve the transition-only installer.
+
 ## [1.1.0] - 2026-10-11
 
 - Update integration guide for user-owned plugin clones and correct singleton/shader paths; sanitized sample previews.

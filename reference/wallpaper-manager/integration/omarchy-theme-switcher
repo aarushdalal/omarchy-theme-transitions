@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Native gallery: group covers at the top level and themes within the active group."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+HOME = Path.home()
+sys.path.insert(0, str(HOME / 'Projects/wallpaper-importer'))
+from wallpaper_visibility import hidden_defaults
+from wallpaper_names import names, display_name
+import wallpaper_groups as grouping
+
+EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']
+
+
+def preview(folder):
+    bg = folder / 'backgrounds'
+    if bg.is_dir():
+        image = next((p for p in sorted(bg.iterdir()) if p.is_file() and p.suffix.lower() in EXTS), None)
+        if image:
+            return image
+    return next((folder / ('preview' + ext) for ext in EXTS if (folder / ('preview' + ext)).is_file()), None)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--mode', choices=['groups', 'themes', 'all'], default='groups')
+    parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--preload', action='store_true')
+    args = parser.parse_args()
+    root = Path(os.environ.get('OMARCHY_PATH', str(HOME / '.local/share/omarchy')))
+    config = Path(os.environ.get('XDG_CONFIG_HOME', HOME / '.config')) / 'omarchy'
+    state = Path(os.environ.get('XDG_STATE_HOME', HOME / '.local/state')) / 'omarchy/current/theme.name'
+    current = state.read_text().strip() if state.is_file() else ''
+    stock = root / 'themes'
+    hidden = hidden_defaults(stock)
+    folders = {}
+    for base in [stock, config / 'themes']:
+        if base.is_dir():
+            folders.update({p.name: p for p in sorted(base.iterdir()) if p.is_dir() and p.name not in hidden})
+    labels, data = names(), grouping.load()
+    library = config / 'wallpaper-library.json'
+    known = json.loads(library.read_text()).get('wallpapers', {}) if library.is_file() else {}
+    records = {s: {'title': labels.get(s, known.get(s, {}).get('title', display_name(s, labels)))} for s in folders}
+    images = {s: preview(folders[s]) or preview(stock / s) for s in folders}
+    records = {s: r for s, r in records.items() if images[s]}
+    buckets = grouping.members(records, data)
+    current_group = grouping.group_for(current, data=data)
+    cards = []
+    if args.mode == 'groups':
+        for group in sorted(buckets, key=str.casefold):
+            if group:
+                slugs = buckets[group]
+                cover = next((s for s in slugs if preview(folders[s]) or preview(stock / s)), None)
+                if cover:
+                    cards.append((group + ' (' + str(len(slugs)) + ')', cover, group))
+            else:
+                cards.extend((records[s]['title'], s, '') for s in buckets[group])
+    else:
+        slugs = sorted(records, key=lambda s: (records[s]['title'].casefold(), s)) if args.mode == 'all' else buckets.get(current_group, []) if current_group else [current] if current in records else []
+        cards = [(records[s]['title'], s, current_group) for s in slugs]
+    cache = Path(os.environ.get('XDG_CACHE_HOME', HOME / '.cache')) / 'omarchy/theme-selector-v5' / (args.mode + '-' + hashlib.sha256(current_group.encode()).hexdigest()[:12])
+    cache.mkdir(parents=True, exist_ok=True)
+    mapping, keep, selected = {}, set(), ''
+    for label, slug, group in cards:
+        image = images[slug]
+        if not image:
+            continue
+        # Keep native labels readable; append a stable identity to avoid name collisions.
+        label = label.replace('/', '∕').replace('\\', '∖').replace('\n', ' ')
+        if any(Path(p).stem == label for p in keep):
+            label += ' — ' + slug
+        link = cache / (label + image.suffix.lower())
+        keep.add(link.name)
+        if not link.is_symlink() or os.readlink(link) != str(image):
+            temporary = link.with_name('.' + link.name + '.' + str(os.getpid()))
+            temporary.symlink_to(image)
+            temporary.replace(link)
+        mapping[str(link)] = slug
+        if slug == current or (args.mode == 'groups' and group and group == current_group):
+            selected = str(link)
+    for path in cache.iterdir():
+        if path.is_symlink() and path.name not in keep:
+            path.unlink()
+    info = {'themes': sorted(folders), 'directory': str(cache), 'mode': args.mode,
+            'group': current_group, 'cards': mapping, 'groups': {g: s for g, s in buckets.items() if g}}
+    summary = {'total_wallpapers': len(records), 'group_count': len(info['groups']),
+               'mode': args.mode, 'group': current_group}
+    info.update(summary)
+    metadata = cache / '.selector-info.json'
+    temporary = metadata.with_name(metadata.name + '.' + str(os.getpid()) + '.tmp')
+    temporary.write_text(json.dumps(summary) + '\n')
+    temporary.replace(metadata)
+    if args.prepare_only:
+        print(json.dumps(info)); return 0
+    if not mapping:
+        return 0
+    command = [str(HOME / '.local/bin/omarchy-menu-images'), '--show-labels', '--filterable', '--lazy-thumbnails', '--selected', selected]
+    if args.preload:
+        command.append('--preload')
+    result = subprocess.run(command + [str(cache)], capture_output=True, text=True)
+    if result.returncode:
+        print(result.stderr, file=sys.stderr); return result.returncode
+    choice = result.stdout.strip()
+    if choice in mapping:
+        print(mapping[choice])
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Maintain wallpaper aliases, reusing hashes until source files change."""
+from pathlib import Path
+import hashlib,json,os,re
+HOME=Path.home();STATE=HOME/'.local/state/caelestia/wallpaper-index.json'
+DEST=HOME/'.local/share/caelestia/omarchy-wallpapers'
+STOCK=Path('/usr/share/omarchy/themes')
+EXTS={'.png','.jpg','.jpeg','.webp','.bmp','.gif'}
+def digest(path):
+    h=hashlib.sha256()
+    with path.open('rb') as f:
+        for chunk in iter(lambda:f.read(1024*1024),b''):h.update(chunk)
+    return h.hexdigest()
+def main():
+    old=json.loads(STATE.read_text()) if STATE.is_file() else {'files':{},'aliases':[]}
+    files={};aliases=set();seen=set();seen_content=set();seen_names=set()
+    roots=[]
+    for base in [HOME/'.config/omarchy/themes',STOCK]:
+        if base.is_dir():roots.extend(p/'backgrounds' for p in sorted(base.iterdir()) if p.is_dir())
+    registry_path=HOME/'.config/omarchy/wallpaper-library.json'
+    registry=json.loads(registry_path.read_text()) if registry_path.is_file() else {}
+    records=registry.get('wallpapers',{})
+    exclusions=registry.get('wallpaper_index_exclusions',{})
+    excluded_slugs=set(exclusions) | {slug for slug,record in records.items() if 'daemon-os' not in record.get('targets',['omarchy','daemon-os'])}
+    allowlist=registry.get('daemonos_stock_theme_allowlist')
+    if allowlist is not None:
+        if not isinstance(allowlist,list) or any(not isinstance(s,str) for s in allowlist):
+            raise ValueError('Invalid DaemonOS default-theme allowlist')
+        if STOCK.is_dir():
+            excluded_slugs |= {p.name for p in STOCK.iterdir() if p.is_dir()} - set(allowlist)
+    hidden={str(Path(p).resolve()) for values in exclusions.values() for p in values}
+    for record in records.values():
+        targets=record.get('targets',['omarchy','daemon-os'])
+        if 'daemon-os' in targets:
+            folder=record.get('installed_theme')
+            if folder:roots.append(Path(folder)/'backgrounds')
+        else:
+            for key in ['image','installed_image']:
+                if record.get(key):hidden.add(str(Path(record[key]).resolve()))
+
+    roots += [HOME/'.config/omarchy/backgrounds',HOME/'Wallpapers']
+    DEST.mkdir(parents=True,exist_ok=True)
+    for root in roots:
+        if not root.is_dir():continue
+        for folder,dirs,names in os.walk(root):
+            dirs[:] = sorted(d for d in dirs if not d.startswith('.'))
+            for name in sorted(names):
+                path=Path(folder)/name
+                if path.suffix.lower() not in EXTS or not path.is_file():continue
+                real=path.resolve();key=str(real)
+                if key in hidden:continue
+                if key in seen:continue
+                seen.add(key)
+                theme=path.parent.parent.name if path.parent.name=='backgrounds' else ('custom' if path.parent.name=='Wallpapers' else path.parent.name)
+                if theme in excluded_slugs:continue
+                if (theme,name) in seen_names:continue
+                seen_names.add((theme,name))
+                stat=real.stat();stamp=[stat.st_size,stat.st_mtime_ns]
+                previous=old.get('files',{}).get(key,{})
+                content=previous.get('digest') if previous.get('stamp')==stamp else digest(real)
+                files[key]={'stamp':stamp,'digest':content}
+                if (theme,content) in seen_content:continue
+                seen_content.add((theme,content))
+                alias=theme+'-'+hashlib.sha256(key.encode()).hexdigest()[:12]+'-'+name
+                if re.match(r'^(preview(?:-unlock)?|unlock)\.',name,re.I):continue
+                aliases.add(alias);link=DEST/alias
+                if link.is_symlink() and os.readlink(link)==key:continue
+                if link.exists() and not link.is_symlink():continue
+                tmp=DEST/(alias+'.'+str(os.getpid())+'.tmp');tmp.symlink_to(real);tmp.replace(link)
+    for name in set(old.get('aliases',[]))-aliases:
+        path=DEST/name
+        if path.is_symlink():path.unlink()
+    STATE.parent.mkdir(parents=True,exist_ok=True)
+    text=json.dumps({'files':files,'aliases':sorted(aliases)},sort_keys=True)
+    if not STATE.is_file() or STATE.read_text()!=text:
+        tmp=STATE.with_suffix('.tmp');tmp.write_text(text);tmp.replace(STATE)
+if __name__=='__main__':main()

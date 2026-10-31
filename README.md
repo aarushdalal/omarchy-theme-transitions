@@ -4,6 +4,8 @@
 
 A GLSL 440 theme transition engine providing 8 continuous visual transition modes rendered on `WlrLayer.Background` beneath running desktop applications — with a dual-slot zero-copy VRAM architecture and a dedicated CLI for mode management.
 
+The updated companion [Wallpaper Manager reference](reference/wallpaper-manager/README.md) adds mounted-drive browsing, multi-folder selection, one group batch per folder, background imports and wallpaper totals in both native galleries. The transition CLI installer stays separate from this optional user-owned manager integration.
+
 This project was developed through an AI-assisted workflow. The concept, customization, configuration, testing, integration, and final iteration were directed and carried out by me.
 
 ---
@@ -71,7 +73,7 @@ I did not write Omarchy, Quickshell, or Hyprland from scratch. What I contribute
 - **Double-Buffered VRAM Slot Architecture**: `slotA`/`slotB` ping-pong eliminates start-lag
 - **Optimized Shader Math**: `d * d` instead of `pow(d, 2.0)` for integrated GPU performance
 - **Dedicated CLI**: `omarchy-theme-transition` for inspecting, selecting, and previewing modes
-- **Widescreen Rounded Theme Picker UI**: Companion reference port (`ImagePicker.qml`) with 16:9 hero card, 26px rounded corners, spring physics, and frosted pill dock
+- **Native Card Galleries**: Updated picker reference with wallpaper totals, separate group/search scope and original-image cards. Its companion manager provides mounted-drive selection and independent folder/group batches.
 
 
 ---
