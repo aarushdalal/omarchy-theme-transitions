@@ -101,6 +101,9 @@ def edit(request):
 
 def execute(request):
     action = request.get('action', 'snapshot')
+    if action in {'retry-preview', 'retry-failed'}:
+        import wallpaper_jobs
+        return wallpaper_jobs.retry_preview(request.get('id', '')) if action == 'retry-preview' else wallpaper_jobs.retry_failed(request.get('id', ''), request.get('confirmed') is True)
     if action in {'draft-save', 'draft-load'}:
         import wallpaper_jobs
         return wallpaper_jobs.save_draft(request.get('batches', [])) if action == 'draft-save' else wallpaper_jobs.load_draft()

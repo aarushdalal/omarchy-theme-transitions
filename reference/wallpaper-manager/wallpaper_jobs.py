@@ -102,13 +102,130 @@ def validate(request):
     return result
 
 
-def submit(request):
+def job_directory(job_id):
+    job_id = str(job_id)
+    if not job_id or Path(job_id).name != job_id or job_id in {'.', '..'}:
+        raise core.ImportFailure('Choose a valid import job.')
+    directory = root() / job_id
+    if not directory.is_dir() or directory.resolve().parent != root().resolve():
+        raise core.ImportFailure('That import job is no longer available.')
+    return directory
+
+
+def receipts(directory, state):
+    path = directory / 'events.jsonl'
+    if not path.is_file():
+        return state.get('results', [])
+    result = []
+    for line in path.read_text().splitlines():
+        try:
+            result.append(json.loads(line))
+        except ValueError:
+            continue  # A process interruption can leave its final line partial.
+    return result
+
+
+def item_key(item):
+    return (item.get('source'), item.get('title'))
+
+
+def retry_plan(job_id):
+    import wallpaper_remove as removal
+    directory = job_directory(job_id)
+    list_jobs()  # Refresh dead-worker states before checking retry eligibility.
+    state = core.read_json(directory / 'status.json')
+    if state['state'] in {'pending', 'running'}:
+        raise core.ImportFailure('Wait for this import to finish before retrying failed files.')
+    # Successful descendant retries remain successes even when the original
+    # historical receipt still records its earlier failures.
+    all_states = []
+    for path in root().glob('*/status.json'):
+        try:
+            all_states.append(summary(path))
+        except (OSError, ValueError):
+            continue
+    by_id = {entry['id']: entry for entry in all_states}
+    ancestor, seen = str(job_id), set()
+    while by_id.get(ancestor, {}).get('retry_of') in by_id and ancestor not in seen:
+        seen.add(ancestor); ancestor = by_id[ancestor]['retry_of']
+    descendants, recovered = {ancestor}, set()
+    changed = True
+    while changed:
+        changed = False
+        for child in all_states:
+            if child.get('retry_of') in descendants and child['id'] not in descendants:
+                if child['state'] in {'pending', 'running'}:
+                    raise core.ImportFailure('A retry for this run is already queued or running.')
+                descendants.add(child['id']); changed = True
+                recovered.update(item_key(event) for event in receipts(root() / child['id'], child) if event.get('status') in {'done', 'planned'})
+    latest = {item_key(event): event.get('status') for event in receipts(directory, state)}
+    records = removal.load_registry(core.Locations())['wallpapers']
+    batches, skipped, failures = [], 0, 0
+    request = core.read_json(directory / 'request.json')
+    for batch in request['batches']:
+        items = []
+        for item in batch['items']:
+            key = item_key(item)
+            if latest.get(key) in {'done', 'planned'} or state['state'] == 'completed':
+                continue
+            failures += 1
+            record = records.get(core.slugify(item['title']), {})
+            image = record.get('installed_image') or record.get('image')
+            targets = {'omarchy', 'daemon-os'} if batch['target'] == 'both' else {batch['target']}
+            installed = False
+            if not batch.get('replace') and targets.issubset(set(record.get('targets', []))) and image and Path(image).is_file():
+                source = Path(item['source']).expanduser()
+                installed = bool(record.get('source_file') and Path(record['source_file']).expanduser().resolve() == source.resolve())
+                if not installed and record.get('source_sha256') and source.is_file():
+                    # Moving a source to another drive does not make an already
+                    # imported wallpaper a failed import again.
+                    try:
+                        installed = core.digest(source) == record['source_sha256']
+                    except OSError:
+                        pass
+            if key in recovered or installed:
+                skipped += 1
+            else:
+                items.append(item)
+        if items:
+            batches.append(dict(batch, items=items))
+    count = sum(len(batch['items']) for batch in batches)
+    return {'id': str(job_id), 'count': count, 'failed': failures, 'skipped': skipped, 'batches': batches}
+
+
+def retry_preview(job_id):
+    plan = retry_plan(job_id)
+    message = (f'{plan["count"]} failed or unfinished wallpapers are ready to retry. '
+               f'{plan["skipped"]} already recovered files will be left untouched.' if plan['count'] else
+               'There are no failed files left to retry. Any earlier failures have already been recovered.')
+    return {'retry_preview': plan, 'message': message}
+
+
+def retry_failed(job_id, confirmed=False):
+    if not confirmed:
+        raise core.ImportFailure('Review and confirm the failed-file retry first.')
+    job_directory(job_id)
+    with (root() / 'retry-submit.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise core.ImportFailure('A retry for this run is already being prepared.')
+        plan = retry_plan(job_id)
+        if not plan['count']:
+            return {'retry_empty': True, 'jobs': list_jobs(), 'message': 'There are no failed files left to retry. Your current queue is unchanged.'}
+        result = submit({'batches': plan['batches'], 'confirmed': True}, retry_of=str(job_id))
+        result['message'] = f'{plan["count"]} failed or unfinished wallpapers queued for retry. {plan["skipped"]} already recovered files skipped. You can close this window.'
+        return result
+
+
+def submit(request, *, retry_of=None):
     batches = validate(request)
     try:
         preflight(batches)
     except core.ImportFailure:
         # Retain an exact, unsubmitted draft even for an older loaded GUI.
-        save_draft(batches)
+        if retry_of is None:
+            save_draft(batches)
         raise
     folder = root(); folder.mkdir(parents=True, exist_ok=True)
     job_id = datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '-' + uuid.uuid4().hex[:6]
@@ -116,7 +233,9 @@ def submit(request):
     total = sum(len(b['items']) for b in batches)
     status = {'id': job_id, 'state': 'pending', 'total': total, 'completed': 0, 'done': 0, 'failed': 0,
               'batch': 0, 'batches': len(batches), 'message': 'Queued for background import.', 'folder': str(directory)}
-    atomic(directory / 'request.json', {'batches': batches})
+    if retry_of is not None:
+        status['retry_of'] = retry_of
+    atomic(directory / 'request.json', {'batches': batches, **({'retry_of': retry_of} if retry_of is not None else {})})
     atomic(directory / 'status.json', status)
     try:
         with (folder / 'worker.log').open('a') as log:

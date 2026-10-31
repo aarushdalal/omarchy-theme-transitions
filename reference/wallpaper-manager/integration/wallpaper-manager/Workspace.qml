@@ -77,7 +77,7 @@ Item {
         if (busy) return false
         workerAction = payload.action
         lastResult = ({})
-        statusText = payload.action === "snapshot" ? "Loading library…" : payload.action === "queue-import" ? "Starting background import…" : payload.action === "discover-folders" ? "Scanning selected folders…" : "Working…"
+        statusText = payload.action === "snapshot" ? "Loading library…" : payload.action === "queue-import" ? "Starting background import…" : payload.action === "retry-preview" ? "Checking failed files…" : payload.action === "retry-failed" ? "Starting background retry…" : payload.action === "discover-folders" ? "Scanning selected folders…" : "Working…"
         return worker.send(payload)
     }
     function flip(key, adding) {
@@ -114,10 +114,16 @@ Item {
         if (event.event === "item") details += event.slug + ": " + event.status + "\n" + event.details + "\n"
         if (event.event !== "result") return
         lastResult = event
-        if (!event.ok) { statusText = event.message; operationSummary = event.message; details += event.message + "\n"; return }
+        if (!event.ok) { statusText = event.message; operationSummary = event.message; details += event.message + "\n"; if (workerAction === "retry-preview" || workerAction === "retry-failed") detailDialog.open(); return }
         if (event.jobs) backgroundJobs = event.jobs
         if (event.job_details !== undefined) { details = event.job_details; detailDialog.open() }
-        if (event.queued_job) { queuedBatches = []; candidates = []; incoming = ({}) }
+        if (event.queued_job && workerAction === "queue-import") { queuedBatches = []; candidates = []; incoming = ({}) }
+        if (event.retry_preview) {
+            var preview = event.retry_preview
+            if (preview.count > 0) confirmOperation({action:"retry-failed",id:preview.id,retry_count:preview.count,retry_skipped:preview.skipped,items:preview.batches.map(function(batch) { return {title:batch.label + " → " + (batch.group || "Ungrouped") + " · " + batch.items.length + " wallpapers"} })})
+            else { details = event.message; detailDialog.open() }
+        }
+        if (event.retry_empty) { details = event.message; detailDialog.open() }
         if (event.folder_batches) {
             var result = BatchModel.addFolders(queuedBatches, event.folder_batches, folderScanOptions)
             queuedBatches = result.batches
@@ -157,7 +163,7 @@ Item {
         function open(): void { root.open() }
         function close(): void { root.close() }
         function toggle(): void { root.toggle() }
-        function status(): string { return JSON.stringify({revision: "modular-8-history", draftLoaded: root.draftLoaded, places: root.browserPlaces, queuedBatches: root.queuedBatches.length, queuedWallpapers: root.queuedCount, jobs: root.backgroundJobs, opened: root.opened, busy: root.busy, page: root.page, themes: root.items.length, visible: root.visibleItems.length, groups: root.groups, selected: root.selectedSlugs, candidates: root.candidates.length, failures: root.failures, status: root.statusText, error: root.lastResult.ok === false ? root.lastResult.message : ""}) }
+        function status(): string { return JSON.stringify({revision: "modular-9-retry", draftLoaded: root.draftLoaded, places: root.browserPlaces, queuedBatches: root.queuedBatches.length, queuedWallpapers: root.queuedCount, jobs: root.backgroundJobs, opened: root.opened, busy: root.busy, page: root.page, themes: root.items.length, visible: root.visibleItems.length, groups: root.groups, selected: root.selectedSlugs, candidates: root.candidates.length, failures: root.failures, status: root.statusText, error: root.lastResult.ok === false ? root.lastResult.message : ""}) }
         function draft(): string { return JSON.stringify({batches:root.queuedBatches}) }
         function view(page: string): void {
             if (page === "folders") { root.page = "add"; root.open(); root.openFolder() }
@@ -171,7 +177,7 @@ Item {
         onEventReceived: event => root.receive(event)
         onDiagnostic: text => root.details += text + "\n"
         onFinished: {
-            if (root.lastResult.ok && root.workerAction !== "snapshot" && root.workerAction !== "discover" && root.workerAction !== "discover-folders") {
+            if (root.lastResult.ok && root.workerAction !== "snapshot" && root.workerAction !== "discover" && root.workerAction !== "discover-folders" && root.workerAction !== "retry-preview") {
                 if (root.workerAction === "import" && !root.lastResult.results.some(function(r) { return r.status === "failed" })) {
                     root.candidates = []; root.incoming = ({}); root.page = "library"
                 }
@@ -285,7 +291,7 @@ Item {
                     Caption { text: "Add / remove on:" }
                     ComboBox { id: targetBox; currentIndex: 1; model: ["Both desktops", "Omarchy", "DaemonOS"]; implicitWidth: 145 }
                     BusyIndicator { running: root.busy; visible: root.busy; implicitWidth: 24; implicitHeight: 24 }
-                    Caption { text: root.backgroundText || root.statusText; color: root.failures ? "#ffbd86" : root.fg; Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight }
+                    Caption { text: root.busy ? root.statusText : root.backgroundText || root.statusText; color: root.failures ? "#ffbd86" : root.fg; Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight }
                     ActionButton { text: root.failures ? "Details (" + root.failures + ")" : "Details"; primary: root.failures > 0; onClicked: detailDialog.open() }
                     ActionButton { text: "Recovery"; onClicked: Quickshell.execDetached(["xdg-open", Quickshell.env("HOME") + "/Projects/wallpaper-importer/data/backups"]) }
                 }
@@ -298,8 +304,8 @@ Item {
                 standardButtons: Dialog.Ok | Dialog.Cancel
                 contentItem: ColumnLayout {
                     spacing: 12
-                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: root.pending ? (root.pending.action === "delete-group" ? "Move all themes in “" + root.pending.old + "” out of the group. Their files are kept." : (root.pending.action === "queue-import" ? "Start " : root.pending.action === "import" ? "Import " : "Remove ") + root.pending.items.length + (root.pending.action === "queue-import" ? " batches in the background?" : " selected themes on " + root.pending.target + "?")) : "" }
-                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: root.pending && root.pending.action === "remove" ? "Active and packaged themes are protected. Originals are kept; installed files move into recovery." : root.pending && root.pending.action === "queue-import" ? "You can close the window. Batches run in order and a notification appears when finished. The current wallpaper stays selected." : "The current wallpaper will stay selected. Each item gets a result in Details." }
+                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: root.pending ? root.pending.action === "retry-failed" ? "Retry " + root.pending.retry_count + " failed or unfinished wallpapers in the background?" : (root.pending.action === "delete-group" ? "Move all themes in “" + root.pending.old + "” out of the group. Their files are kept." : (root.pending.action === "queue-import" ? "Start " : root.pending.action === "import" ? "Import " : "Remove ") + root.pending.items.length + (root.pending.action === "queue-import" ? " batches in the background?" : " selected themes on " + root.pending.target + "?")) : "" }
+                    Label { Layout.fillWidth: true; wrapMode: Text.WordWrap; text: root.pending && root.pending.action === "retry-failed" ? "The retry keeps the original folders, groups and import settings. Your separate queue stays saved. You can close the window after starting." : root.pending && root.pending.action === "remove" ? "Active and packaged themes are protected. Originals are kept; installed files move into recovery." : root.pending && root.pending.action === "queue-import" ? "You can close the window. Batches run in order and a notification appears when finished. The current wallpaper stays selected." : "The current wallpaper will stay selected. Each item gets a result in Details." }
                     ScrollView { visible: root.pending && root.pending.items !== undefined; Layout.fillWidth: true; Layout.preferredHeight: 140
                         TextArea { readOnly: true; wrapMode: Text.Wrap; text: root.pending && root.pending.items ? root.pending.items.map(function(item) { return (item.title || item.slug) + (root.pending.action === "import" ? "  ·  " + (item.group || "Ungrouped") : "") }).join("\n") : "" }
                     }

@@ -20,7 +20,9 @@ ColumnLayout {
                         ActionButton { text: "Prepare batch"; primary: !pane.showQueue; onClicked: pane.showQueue = false }
                         ActionButton { objectName: "queue-tab"; text: "Queue (" + manager.queuedBatches.length + ")"; primary: pane.showQueue; onClicked: pane.showQueue = true }
                         Caption { Layout.fillWidth: true; text: manager.queuedCount + " wallpapers queued"; opacity: 0.65 }
+                        ActionButton { objectName: "job-history"; text: "History (" + manager.backgroundJobs.length + ")"; enabled: !manager.busy && manager.backgroundJobs.length > 0; onClicked: history.open() }
                     }
+                    JobHistory { id: history; objectName: "job-history-dialog"; manager: pane.manager; parent: pane; anchors.centerIn: parent }
                     ImportQueue { manager: pane.manager; visible: pane.showQueue; onAddFolderRequested: { pane.showQueue = false; manager.openFolder() } }
                     ColumnLayout {
                     visible: !pane.showQueue; Layout.fillWidth: true; Layout.fillHeight: true; spacing: 10

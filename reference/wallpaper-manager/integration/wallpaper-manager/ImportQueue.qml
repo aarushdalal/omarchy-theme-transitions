@@ -22,7 +22,6 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         Caption { Layout.fillWidth: true; text: manager.queuedBatches.length + " batches · " + manager.queuedCount + " wallpapers queued"; font.bold: true }
-        ActionButton { objectName: "job-history"; text: "History (" + manager.backgroundJobs.length + ")"; enabled: manager.backgroundJobs.length > 0; onClicked: history.open() }
         ActionButton { text: "Add folders…"; enabled: !manager.busy; onClicked: pane.addFolderRequested() }
         ActionButton { text: "Clear queue"; enabled: !manager.busy && manager.queuedBatches.length > 0; onClicked: manager.queuedBatches = [] }
     }
@@ -73,7 +72,6 @@ ColumnLayout {
                 ActionButton { text: "Details"; enabled: !manager.busy && pane.runningJobs.length > 0; onClicked: manager.request({action:"job-details",id:pane.runningJobs[0].id}) }
             }
     }
-    JobHistory { id: history; objectName: "job-history-dialog"; manager: pane.manager; parent: pane; anchors.centerIn: parent }
     RowLayout {
         Layout.fillWidth: true
         Caption { Layout.fillWidth: true; text: "Imports keep running after you close this window. A notification appears when finished."; opacity: 0.7 }

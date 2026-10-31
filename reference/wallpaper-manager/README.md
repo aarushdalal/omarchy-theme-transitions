@@ -15,7 +15,9 @@ Scanning does not install wallpapers, assign existing themes to groups, or chang
 
 Queue drafts save automatically in `data/pending-draft.json` and restore after shell reloads. Submitted requests and progress are durable in `data/jobs/`; installation recovery is in `data/backups/`. Source originals are preserved. Reusing an already installed theme name requires an explicit replace choice and retains recovery files.
 
-Only one compact active-job status appears below the queue. Previous runs stay in the separate **History** window with their own **Details**, so repeated runs cannot crowd out folder controls. Editing a group updates its existing row and preserves the current scroll position. Configured backup destinations are checked before job acceptance; a missing destination causes one setup error before image processing and keeps the draft for retry.
+Only one compact active-job status appears below the queue. Previous runs stay in the separate **History** window with their own **Details**, so repeated runs cannot crowd out folder controls. History is reachable from the Add toolbar even with an empty queue. Editing a group updates its existing row and preserves the current scroll position. Configured backup destinations are checked before job acceptance; a missing destination causes one setup error before image processing and keeps the draft for retry.
+
+Choose **History → Retry failed…** after a run finishes, review the remaining count and folders, then confirm. Only failed or unfinished items are retried with their original groups, names, targets and media options. Successful items, files recovered by later retries and already-installed identical sources are left untouched. A moved source can be recognized by its recorded content hash. The retry runs as a new background job linked to the original; original receipts and your separate draft queue are preserved. The manager blocks overlapping retries for the same family of runs and reports when nothing remains to retry.
 
 ## Requirements
 
@@ -56,4 +58,4 @@ python3 tools/release_privacy_check.py
 
 Tests use disposable homes and mock activation. Quickshell transport checks run when Quickshell is available; the full workspace wiring check also requires an active Wayland session and opens no visible test window. Tests cover mounted-place decoding, read-only locations, per-folder scans, optional recursion, overlapping selections, explicit groups, detached jobs, large requests and helper failures.
 
-The source GUI additionally passed twelve interaction cases at normal and smaller sizes, plus a real mounted-drive selection check. This validates the manager/picker update; it does not repeat every GPU transition-mode benchmark.
+The source GUI additionally passed fifteen interaction cases at normal and smaller sizes, plus a real mounted-drive selection check. This validates the manager/picker update; it does not repeat every GPU transition-mode benchmark.

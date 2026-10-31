@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.3.0] - 2026-10-31
+
+- Add History → Retry failed with a preview and background confirmation. Retries preserve original folder, group, name, desktop and media settings.
+- Exclude successful files and later recoveries; recognize identical sources moved to another drive by their recorded hash. Preserve explicit replace settings for unresolved failures.
+- Keep separate queue drafts and historical receipts intact. Prevent overlapping retries in the same retry family, and offer unfinished items after an interrupted run.
+- Add retry-specific backend and interface checks, plus a dark History header and footer.
+- Move History to the common Add toolbar so job details and retry remain accessible when the import queue is empty.
+
 ## [1.2.1] - 2026-10-31
 
 - Check configured backup destinations before starting image processing. Keep the unsubmitted draft when a setup requirement fails, instead of repeating the same failure for every wallpaper.

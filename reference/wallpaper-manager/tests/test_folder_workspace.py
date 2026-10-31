@@ -63,7 +63,9 @@ ShellRoot {
     scene.stage=1
     workspace.discoverFolders(scene.paths,{mode:"auto"})
    } else {
-    scene.finish(batches[0].group==="Chosen new group" && batches[1].group==="Other group","Separate queue batches, explicit groups and repeat-scan deduplication verified")
+    workspace.workerAction="retry-failed"
+    workspace.receive({event:"result",ok:true,queued_job:"test-retry",jobs:[],message:"Retry queued"})
+    scene.finish(workspace.queuedCount===2 && batches[0].group==="Chosen new group" && batches[1].group==="Other group","Separate queue batches and groups survive a retry submission")
    }
   }
  }
