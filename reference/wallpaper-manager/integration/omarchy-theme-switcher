@@ -113,7 +113,15 @@ def main():
     temporary = metadata.with_name(metadata.name + '.' + str(os.getpid()) + '.tmp')
     temporary.write_text(json.dumps(summary) + '\n')
     temporary.replace(metadata)
-    tsv_lines = [str(k) + '\t' + str(thumbnails_map.get(k, k)) for k in sorted(mapping.keys(), key=str.casefold)]
+    tsv_lines = []
+    for k in sorted(mapping.keys(), key=str.casefold):
+        slug = mapping[k]
+        meta = known.get(slug, {})
+        accent = meta.get('accent', '')
+        bg = meta.get('background', '')
+        fg = meta.get('foreground', '')
+        pal = f"{accent},{bg},{fg}" if accent else ""
+        tsv_lines.append(f"{k}\t{thumbnails_map.get(k, k)}\t{pal}")
     tsv_file = cache / '.rows.tsv'
     tmp_tsv = tsv_file.with_name('.rows.tsv.' + str(os.getpid()) + '.tmp')
     tmp_tsv.write_text('\n'.join(tsv_lines) + '\n')

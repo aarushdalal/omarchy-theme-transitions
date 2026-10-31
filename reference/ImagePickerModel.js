@@ -28,6 +28,10 @@ function loadRows(rows) {
     var name = nameForPath(path)
     var label = labelForPath(path)
     var thumb = columns[1] || path
+    var palette = columns[2] ? columns[2].split(",") : []
+    var accent = palette[0] || ""
+    var bg = palette[1] || ""
+    var fg = palette[2] || ""
 
     images.push({
       filePath: path,
@@ -35,6 +39,9 @@ function loadRows(rows) {
       name: name,
       label: label,
       thumbnailPath: thumb,
+      accent: accent,
+      bg: bg,
+      fg: fg,
       searchLower: (name + " " + label).toLowerCase()
     })
   }
@@ -42,13 +49,28 @@ function loadRows(rows) {
   return images
 }
 
-function itemMatches(images, index, filterText) {
+function itemMatches(images, index, filterText, favoriteList) {
   if (!Array.isArray(images) || index < 0 || index >= images.length) return false
+  var item = images[index]
+  if (!item) return false
+
+  if (Array.isArray(favoriteList)) {
+    var slug = item.name || nameForPath(item.filePath)
+    var clean = String(slug).replace(/\s*\(\d+\)$/, "").trim()
+    var isFav = false
+    for (var f = 0; f < favoriteList.length; f++) {
+      var fav = favoriteList[f]
+      if (fav === slug || fav === clean || fav === item.label || fav === item.filePath) {
+        isFav = true
+        break
+      }
+    }
+    if (!isFav) return false
+  }
+
   var needle = String(filterText || "").toLowerCase().trim()
   if (!needle) return true
 
-  var item = images[index]
-  if (!item) return false
   if (item.searchLower) {
     return item.searchLower.indexOf(needle) !== -1
   }
@@ -57,37 +79,26 @@ function itemMatches(images, index, filterText) {
       || labelForPath(path).toLowerCase().indexOf(needle) !== -1
 }
 
-function firstMatchingIndex(images, filterText) {
+function firstMatchingIndex(images, filterText, favoriteList) {
   var values = Array.isArray(images) ? images : []
-  var needle = String(filterText || "").toLowerCase().trim()
   for (var i = 0; i < values.length; i++) {
-    if (!needle) return i
-    var item = values[i]
-    if (item && item.searchLower && item.searchLower.indexOf(needle) !== -1) return i
-    if (itemMatches(values, i, filterText)) return i
+    if (itemMatches(values, i, filterText, favoriteList)) return i
   }
 
   return -1
 }
 
-function filteredPosition(images, index, filterText) {
-  if (!filterText) return index
-  var needle = String(filterText || "").toLowerCase().trim()
-  if (!needle) return index
-
+function filteredPosition(images, index, filterText, favoriteList) {
   var position = 0
   for (var i = 0; i < index; i++) {
-    var item = images[i]
-    var match = item && item.searchLower ? (item.searchLower.indexOf(needle) !== -1) : itemMatches(images, i, filterText)
-    if (match) position++
+    if (itemMatches(images, i, filterText, favoriteList)) position++
   }
 
   return position
 }
 
-function selectedFilteredPosition(images, selectedIndex, filterText) {
-  if (!filterText) return selectedIndex
-  return itemMatches(images, selectedIndex, filterText) ? filteredPosition(images, selectedIndex, filterText) : 0
+function selectedFilteredPosition(images, selectedIndex, filterText, favoriteList) {
+  return itemMatches(images, selectedIndex, filterText, favoriteList) ? filteredPosition(images, selectedIndex, filterText, favoriteList) : 0
 }
 
 function indexForSelectedImage(images, selectedImage) {
@@ -99,19 +110,17 @@ function indexForSelectedImage(images, selectedImage) {
   return 0
 }
 
-function nextSelectedIndexForFilter(images, selectedIndex, filterText) {
-  if (itemMatches(images, selectedIndex, filterText)) return selectedIndex
-  return firstMatchingIndex(images, filterText)
+function nextSelectedIndexForFilter(images, selectedIndex, filterText, favoriteList) {
+  if (itemMatches(images, selectedIndex, filterText, favoriteList)) return selectedIndex
+  return firstMatchingIndex(images, filterText, favoriteList)
 }
 
-function filteredImages(images, filterText) {
+function filteredImages(images, filterText, favoriteList) {
   var rows = []
-  var needle = String(filterText || "").toLowerCase().trim()
   var values = Array.isArray(images) ? images : []
   for (var i = 0; i < values.length; i++) {
-    var item = values[i]
-    var match = !needle || (item && item.searchLower ? item.searchLower.indexOf(needle) !== -1 : itemMatches(values, i, filterText))
-    if (match) {
+    if (itemMatches(values, i, filterText, favoriteList)) {
+      var item = values[i]
       rows.push({
         originalIndex: i,
         filePath: item.filePath,
@@ -125,14 +134,13 @@ function filteredImages(images, filterText) {
   return rows
 }
 
-function positions(images, filterText) {
+function positions(images, filterText, favoriteList) {
   var result = [], position = 0
   var needle = String(filterText || "").toLowerCase().trim()
-  var hasFilter = needle.length > 0
+  var hasFilter = needle.length > 0 || Array.isArray(favoriteList)
   var len = Array.isArray(images) ? images.length : 0
   for (var i = 0; i < len; i++) {
-    var item = images[i]
-    var match = !hasFilter || (item && item.searchLower ? item.searchLower.indexOf(needle) !== -1 : itemMatches(images, i, filterText))
+    var match = !hasFilter || itemMatches(images, i, filterText, favoriteList)
     result.push(match ? position++ : -1)
   }
   return result

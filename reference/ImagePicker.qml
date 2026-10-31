@@ -74,10 +74,106 @@ Item {
     onFileChanged: reload()
   }
 
+  // Interactive Features: Favorites & Sound Engine
+  property var favorites: []
+  property bool showOnlyFavorites: false
+  property bool soundEnabled: true
+  property bool peekMode: false
+
+  FileView {
+    id: favoritesWatcher
+    path: root.stateHome + "/omarchy/favorite-themes.json"
+    watchChanges: true
+    printErrors: false
+    onLoaded: {
+      try {
+        var data = JSON.parse(text())
+        if (Array.isArray(data)) root.favorites = data
+      } catch (e) { root.favorites = [] }
+    }
+    onLoadFailed: root.favorites = []
+    onFileChanged: reload()
+  }
+
+  Process {
+    id: saveFavoritesProc
+  }
+
+  Process {
+    id: soundProc
+  }
+
+  function playTick() {
+    if (!root.soundEnabled) return
+    soundProc.running = false
+    soundProc.command = ["canberra-gtk-play", "-i", "audio-volume-change"]
+    soundProc.running = true
+  }
+
+  function isFavorite(themeSlug) {
+    if (!themeSlug) return false
+    var clean = String(themeSlug).replace(/\s*\(\d+\)$/, "").trim()
+    for (var i = 0; i < root.favorites.length; i++) {
+      var fav = root.favorites[i]
+      if (fav === themeSlug || fav === clean) return true
+    }
+    return false
+  }
+
+  function toggleFavorite(themeSlug) {
+    if (!themeSlug) return
+    var clean = String(themeSlug).replace(/\s*\(\d+\)$/, "").trim() || themeSlug
+    var list = root.favorites.slice()
+    var idx = -1
+    for (var i = 0; i < list.length; i++) {
+      if (list[i] === themeSlug || list[i] === clean) {
+        idx = i
+        break
+      }
+    }
+    if (idx !== -1) {
+      list.splice(idx, 1)
+    } else {
+      list.push(clean)
+    }
+    root.favorites = list
+    saveFavoritesProc.running = false
+    saveFavoritesProc.command = ["bash", "-c", "mkdir -p " + Util.shellQuote(root.stateHome + "/omarchy") + "; printf '%s\\n' " + Util.shellQuote(JSON.stringify(list)) + " > " + Util.shellQuote(root.stateHome + "/omarchy/favorite-themes.json")]
+    saveFavoritesProc.running = true
+    playTick()
+  }
+
+  function surpriseMe() {
+    var count = root.imageArray.length
+    if (count <= 1) return
+    var matches = []
+    for (var i = 0; i < count; i++) {
+      if (root.itemMatches(i) && i !== root.selectedIndex) matches.push(i)
+    }
+    if (matches.length === 0) return
+    var pick = matches[Math.floor(Math.random() * matches.length)]
+    root.select(pick)
+    playTick()
+  }
+
+  function togglePeek() {
+    peekMode = !peekMode
+    playTick()
+  }
+
+  function toggleFavoritesFilter() {
+    showOnlyFavorites = !showOnlyFavorites
+    if (!itemMatches(selectedIndex)) {
+      var first = ImagePickerModel.nextSelectedIndexForFilter(imageArray, selectedIndex, filterText, showOnlyFavorites ? favorites : null)
+      if (first >= 0) selectedIndex = first
+    }
+    playTick()
+  }
+
   readonly property string currentAnimationStyle: Motion.activePreset
   readonly property int animDuration: Motion.reducedMotion ? 1 : Math.min(220, Motion.entryDuration)
   readonly property int moveDuration: Motion.reducedMotion ? 1 : Math.min(220, Math.round(Motion.liquidMoveDuration * 0.75))
-  readonly property var filterPositions: ImagePickerModel.positions(root.imageArray, root.filterText)
+  readonly property var filterPositions: ImagePickerModel.positions(root.imageArray, root.filterText, root.showOnlyFavorites ? root.favorites : null)
   readonly property var animEasingType: Motion.easeExpressive
   readonly property real animOvershoot: Motion.springOvershoot
   readonly property string animStyleDisplay: Motion.presetHumanName(Motion.activePreset)
@@ -179,7 +275,7 @@ Item {
   }
 
   function firstMatchingIndex() {
-    return ImagePickerModel.firstMatchingIndex(imageArray, filterText)
+    return ImagePickerModel.firstMatchingIndex(imageArray, filterText, showOnlyFavorites ? favorites : null)
   }
 
   function filteredPosition(index) {
@@ -198,6 +294,7 @@ Item {
     if (index === selectedIndex && immediate !== true) return
 
     selectedIndex = index
+    playTick()
   }
 
   function selectAdjacent(direction) {
@@ -252,7 +349,7 @@ Item {
     filterText = nextFilterText
 
     if (!itemMatches(selectedIndex)) {
-      var first = ImagePickerModel.nextSelectedIndexForFilter(imageArray, selectedIndex, filterText)
+      var first = ImagePickerModel.nextSelectedIndexForFilter(imageArray, selectedIndex, filterText, showOnlyFavorites ? favorites : null)
       if (first >= 0) selectedIndex = first
     }
   }
@@ -535,7 +632,13 @@ Item {
     MouseArea {
       anchors.fill: parent
       enabled: root.opened && root.imagesLoaded
-      onClicked: root.cancel()
+      onClicked: {
+        if (root.peekMode) {
+          root.togglePeek()
+        } else {
+          root.cancel()
+        }
+      }
     }
 
     // Main Presentation Container
@@ -557,6 +660,8 @@ Item {
       // =======================================================================
       Rectangle {
         id: topHud
+        opacity: root.peekMode ? 0.0 : 1.0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
         anchors.top: parent.top
         anchors.horizontalCenter: parent.horizontalCenter
         width: Math.min(parent.width - 40, root.heroWidth + Style.space(140))
@@ -662,69 +767,199 @@ Item {
           }
         }
 
-        // Right side: Interactive Search Box with Clear Button
-        Rectangle {
-          visible: root.filterable
+        // Right side: Interactive Actions & Filter Box
+        Row {
           anchors.right: parent.right
           anchors.rightMargin: Style.space(12)
           anchors.verticalCenter: parent.verticalCenter
-          height: Style.space(36)
-          width: Math.min(290, parent.width * 0.36)
-          radius: Style.space(18)
-          color: root.filterText ? Util.alpha(root.selectedBorder, 0.18) : Util.alpha(ShellCommons.Color.foreground, 0.07)
-          border.color: root.filterText ? root.selectedBorder : Util.alpha(ShellCommons.Color.foreground, 0.16)
-          border.width: 1.5
+          spacing: Style.space(8)
 
-          Behavior on color { ColorAnimation { duration: 180 } }
-          Behavior on border.color { ColorAnimation { duration: 180 } }
+          // Favorites Filter Toggle Button
+          Rectangle {
+            height: Style.space(34)
+            width: favBtnRow.width + Style.space(18)
+            radius: Style.space(17)
+            color: root.showOnlyFavorites ? Util.alpha("#F59E0B", 0.28) : (favBtnMouse.containsMouse ? Util.alpha(ShellCommons.Color.foreground, 0.14) : Util.alpha(ShellCommons.Color.foreground, 0.06))
+            border.color: root.showOnlyFavorites ? "#F59E0B" : Util.alpha(ShellCommons.Color.foreground, 0.20)
+            border.width: 1.5
+            anchors.verticalCenter: parent.verticalCenter
 
-          Row {
-            anchors.fill: parent
-            anchors.leftMargin: Style.space(14)
-            anchors.rightMargin: Style.space(10)
-            spacing: Style.space(8)
+            Row {
+              id: favBtnRow
+              anchors.centerIn: parent
+              spacing: Style.space(5)
+              Text {
+                text: "★"
+                color: root.showOnlyFavorites ? "#F59E0B" : (favBtnMouse.containsMouse ? "#F59E0B" : root.foreground)
+                font.pixelSize: Style.font.bodySmall
+                font.family: Style.font.menuFamily
+                anchors.verticalCenter: parent.verticalCenter
+              }
+              Text {
+                text: "Favorites" + (root.favorites.length > 0 ? " (" + root.favorites.length + ")" : "")
+                color: root.showOnlyFavorites ? "#F59E0B" : root.foreground
+                font.pixelSize: Style.font.caption
+                font.weight: Font.DemiBold
+                font.family: Style.font.menuFamily
+                anchors.verticalCenter: parent.verticalCenter
+              }
+            }
+
+            MouseArea {
+              id: favBtnMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.toggleFavoritesFilter()
+            }
+          }
+
+          // Surprise Me (Shuffle) Button
+          Rectangle {
+            height: Style.space(34)
+            width: Style.space(34)
+            radius: Style.space(17)
+            color: surpriseMouse.containsMouse ? Util.alpha(root.selectedBorder, 0.25) : Util.alpha(ShellCommons.Color.foreground, 0.06)
+            border.color: surpriseMouse.containsMouse ? root.selectedBorder : Util.alpha(ShellCommons.Color.foreground, 0.20)
+            border.width: 1
+            anchors.verticalCenter: parent.verticalCenter
 
             Text {
-              text: "󰍉"
-              color: root.filterText ? root.selectedBorder : Util.alpha(root.foreground, 0.55)
+              anchors.centerIn: parent
+              text: "󰒝"
+              color: surpriseMouse.containsMouse ? root.selectedBorder : root.foreground
               font.pixelSize: Style.font.body
               font.family: Style.font.menuFamily
-              anchors.verticalCenter: parent.verticalCenter
             }
+
+            MouseArea {
+              id: surpriseMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.surpriseMe()
+            }
+          }
+
+          // Fullscreen Peek Button
+          Rectangle {
+            height: Style.space(34)
+            width: Style.space(34)
+            radius: Style.space(17)
+            color: peekBtnMouse.containsMouse ? Util.alpha(root.selectedBorder, 0.25) : Util.alpha(ShellCommons.Color.foreground, 0.06)
+            border.color: peekBtnMouse.containsMouse ? root.selectedBorder : Util.alpha(ShellCommons.Color.foreground, 0.20)
+            border.width: 1
+            anchors.verticalCenter: parent.verticalCenter
 
             Text {
-              text: root.filterText || "Type to filter themes…"
-              color: root.filterText ? root.foreground : Util.alpha(root.foreground, 0.45)
-              font.pixelSize: Style.font.bodySmall
+              anchors.centerIn: parent
+              text: "󰍹"
+              color: peekBtnMouse.containsMouse ? root.selectedBorder : root.foreground
+              font.pixelSize: Style.font.body
               font.family: Style.font.menuFamily
-              font.weight: root.filterText ? Font.Medium : Font.Normal
-              elide: Text.ElideRight
-              width: parent.width - Style.space(56)
-              anchors.verticalCenter: parent.verticalCenter
             }
 
-            Rectangle {
-              visible: !!root.filterText
-              width: Style.space(20)
-              height: Style.space(20)
-              radius: Style.space(10)
-              color: clearMouse.containsMouse ? Util.alpha(root.selectedBorder, 0.35) : Util.alpha(ShellCommons.Color.foreground, 0.15)
-              anchors.verticalCenter: parent.verticalCenter
+            MouseArea {
+              id: peekBtnMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.togglePeek()
+            }
+          }
+
+          // Sound Toggle Button
+          Rectangle {
+            height: Style.space(34)
+            width: Style.space(34)
+            radius: Style.space(17)
+            color: soundBtnMouse.containsMouse ? Util.alpha(root.selectedBorder, 0.25) : Util.alpha(ShellCommons.Color.foreground, 0.06)
+            border.color: soundBtnMouse.containsMouse ? root.selectedBorder : Util.alpha(ShellCommons.Color.foreground, 0.20)
+            border.width: 1
+            anchors.verticalCenter: parent.verticalCenter
+
+            Text {
+              anchors.centerIn: parent
+              text: root.soundEnabled ? "󰕾" : "󰖁"
+              color: root.soundEnabled ? root.foreground : Util.alpha(root.foreground, 0.40)
+              font.pixelSize: Style.font.body
+              font.family: Style.font.menuFamily
+            }
+
+            MouseArea {
+              id: soundBtnMouse
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: {
+                root.soundEnabled = !root.soundEnabled
+                root.playTick()
+              }
+            }
+          }
+
+          // Interactive Search Box with Clear Button
+          Rectangle {
+            visible: root.filterable
+            height: Style.space(34)
+            width: Math.min(220, parent.width * 0.28)
+            radius: Style.space(17)
+            color: root.filterText ? Util.alpha(root.selectedBorder, 0.18) : Util.alpha(ShellCommons.Color.foreground, 0.07)
+            border.color: root.filterText ? root.selectedBorder : Util.alpha(ShellCommons.Color.foreground, 0.16)
+            border.width: 1.5
+            anchors.verticalCenter: parent.verticalCenter
+
+            Behavior on color { ColorAnimation { duration: 180 } }
+            Behavior on border.color { ColorAnimation { duration: 180 } }
+
+            Row {
+              anchors.fill: parent
+              anchors.leftMargin: Style.space(12)
+              anchors.rightMargin: Style.space(8)
+              spacing: Style.space(6)
 
               Text {
-                anchors.centerIn: parent
-                text: "󰅖"
-                color: root.foreground
-                font.pixelSize: Style.font.caption
+                text: "󰍉"
+                color: root.filterText ? root.selectedBorder : Util.alpha(root.foreground, 0.55)
+                font.pixelSize: Style.font.bodySmall
                 font.family: Style.font.menuFamily
+                anchors.verticalCenter: parent.verticalCenter
               }
 
-              MouseArea {
-                id: clearMouse
-                anchors.fill: parent
-                hoverEnabled: true
-                cursorShape: Qt.PointingHandCursor
-                onClicked: root.updateFilter("")
+              Text {
+                text: root.filterText || "Filter themes…"
+                color: root.filterText ? root.foreground : Util.alpha(root.foreground, 0.45)
+                font.pixelSize: Style.font.caption
+                font.family: Style.font.menuFamily
+                font.weight: root.filterText ? Font.Medium : Font.Normal
+                elide: Text.ElideRight
+                width: parent.width - Style.space(48)
+                anchors.verticalCenter: parent.verticalCenter
+              }
+
+              Rectangle {
+                visible: !!root.filterText
+                width: Style.space(18)
+                height: Style.space(18)
+                radius: Style.space(9)
+                color: clearMouse.containsMouse ? Util.alpha(root.selectedBorder, 0.35) : Util.alpha(ShellCommons.Color.foreground, 0.15)
+                anchors.verticalCenter: parent.verticalCenter
+
+                Text {
+                  anchors.centerIn: parent
+                  text: "󰅖"
+                  color: root.foreground
+                  font.pixelSize: Style.font.caption
+                  font.family: Style.font.menuFamily
+                }
+
+                MouseArea {
+                  id: clearMouse
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.updateFilter("")
+                }
               }
             }
           }
@@ -748,14 +983,69 @@ Item {
         readonly property real centerX: (width - root.heroWidth) / 2
         readonly property real centerY: (height - root.heroHeight) / 2
 
+        // Touchpad Two-Finger Swipe & Smooth Mouse-Wheel Navigation
+        WheelHandler {
+          id: deckWheelHandler
+          property real accumulatedDelta: 0
+          onWheel: function(event) {
+            var delta = event.angleDelta.y !== 0 ? event.angleDelta.y : -event.angleDelta.x
+            accumulatedDelta += delta
+            if (accumulatedDelta >= 40) {
+              accumulatedDelta = 0
+              root.selectAdjacent(-1)
+            } else if (accumulatedDelta <= -40) {
+              accumulatedDelta = 0
+              root.selectAdjacent(1)
+            }
+          }
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          z: -1
+          property real accumulatedWheel: 0
+          onWheel: function(wheel) {
+            var delta = wheel.angleDelta.y !== 0 ? wheel.angleDelta.y : -wheel.angleDelta.x
+            accumulatedWheel += delta
+            if (accumulatedWheel >= 40) {
+              accumulatedWheel = 0
+              root.selectAdjacent(-1)
+            } else if (accumulatedWheel <= -40) {
+              accumulatedWheel = 0
+              root.selectAdjacent(1)
+            }
+          }
+        }
+
         Keys.priority: Keys.BeforeItem
         Keys.onPressed: function(event) {
+          if (root.peekMode) {
+            root.peekMode = false
+            event.accepted = true
+            return
+          }
           if (event.key === Qt.Key_Escape) {
             if (root.filterText) {
               root.updateFilter("")
+            } else if (root.showOnlyFavorites) {
+              root.showOnlyFavorites = false
             } else {
               root.cancel()
             }
+            event.accepted = true
+          } else if (event.key === Qt.Key_Space || (event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier || !root.filterable))) {
+            root.togglePeek()
+            event.accepted = true
+          } else if (event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier || !root.filterable)) {
+            root.surpriseMe()
+            event.accepted = true
+          } else if (event.key === Qt.Key_S && (event.modifiers & Qt.ControlModifier || !root.filterable)) {
+            var curItem = root.imageArray[root.selectedIndex]
+            if (curItem) root.toggleFavorite(curItem.name || ImagePickerModel.nameForPath(curItem.filePath))
+            event.accepted = true
+          } else if (event.key === Qt.Key_M && (event.modifiers & Qt.ControlModifier || !root.filterable)) {
+            root.soundEnabled = !root.soundEnabled
+            root.playTick()
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
             root.applySelected()
@@ -804,6 +1094,33 @@ Item {
             readonly property string themeName: (imageData && imageData.name) ? imageData.name : (inStack ? ImagePickerModel.nameForPath(filePath) : "")
             readonly property string displayTitle: (imageData && imageData.label) ? imageData.label : (inStack ? ImagePickerModel.labelForPath(filePath) : "")
             readonly property bool isCurrentTheme: inStack && root.activeThemeName !== "" && themeName === root.activeThemeName
+
+            // Dynamic Palette Colors from Theme Metadata
+            readonly property string accentColorHex: (imageData && imageData.accent) ? imageData.accent : root.selectedBorder
+            readonly property string fgColorHex: (imageData && imageData.fg) ? imageData.fg : root.foreground
+            readonly property string bgColorHex: (imageData && imageData.bg) ? imageData.bg : ShellCommons.Color.background
+
+            // 3D Parallax Tilt & Specular Sheen Properties
+            property real tiltAngleX: 0.0
+            property real tiltAngleY: 0.0
+            property real sheenNormX: 0.5
+
+            transform: [
+              Rotation {
+                origin.x: stackCard.width / 2
+                origin.y: stackCard.height / 2
+                axis { x: 1; y: 0; z: 0 }
+                angle: stackCard.tiltAngleX
+                Behavior on angle { NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }
+              },
+              Rotation {
+                origin.x: stackCard.width / 2
+                origin.y: stackCard.height / 2
+                axis { x: 0; y: 1; z: 0 }
+                angle: stackCard.tiltAngleY
+                Behavior on angle { NumberAnimation { duration: 90; easing.type: Easing.OutQuad } }
+              }
+            ]
 
             readonly property bool matched: root.itemMatches(index)
             readonly property int totalMatches: root.filterText ? root.filterPositions.filter(function(p) { return p >= 0 }).length : root.imageArray.length
@@ -858,6 +1175,7 @@ Item {
             }
 
             readonly property real cardScale: {
+              if (root.peekMode) return isHero ? Math.min(panel.width / root.heroWidth, panel.height / root.heroHeight) : 0.0
               if (isHero) return 1.0
               if (relativeIndex > 0) {
                 var r = Math.min(relativeIndex, 3)
@@ -880,6 +1198,7 @@ Item {
             }
 
             readonly property real cardOpacity: {
+              if (root.peekMode) return isHero ? 1.0 : 0.0
               if (isHero) return 1.0
               if (relativeIndex > 0) {
                 var r = Math.min(relativeIndex, 3)
@@ -930,6 +1249,28 @@ Item {
               onEntered: stackCard.isHovered = true
               onExited: stackCard.isHovered = false
               onClicked: root.select(index)
+            }
+
+            // Hero Card Mouse Tracking for Dynamic 3D Parallax Tilt
+            MouseArea {
+              anchors.fill: parent
+              enabled: stackCard.isHero && !root.peekMode
+              hoverEnabled: true
+              acceptedButtons: Qt.LeftButton
+              z: 280
+              onPositionChanged: function(mouse) {
+                stackCard.tiltAngleX = Math.max(-3.5, Math.min(3.5, ((mouse.y / stackCard.height) - 0.5) * -5.5))
+                stackCard.tiltAngleY = Math.max(-3.5, Math.min(3.5, ((mouse.x / stackCard.width) - 0.5) * 5.5))
+                stackCard.sheenNormX = Math.max(0.0, Math.min(1.0, mouse.x / stackCard.width))
+              }
+              onEntered: stackCard.isHovered = true
+              onExited: {
+                stackCard.isHovered = false
+                stackCard.tiltAngleX = 0.0
+                stackCard.tiltAngleY = 0.0
+                stackCard.sheenNormX = 0.5
+              }
+              onDoubleClicked: root.togglePeek()
             }
 
             // -------------------------------------------------------------
@@ -1025,11 +1366,28 @@ Item {
                   GradientStop { position: 1.0; color: "transparent" }
                 }
               }
+
+              // Dynamic Specular Light Sheen tracking cursor
+              Rectangle {
+                visible: stackCard.isHero
+                anchors.fill: parent
+                radius: Style.space(24)
+                opacity: stackCard.isHovered ? 0.32 : 0.0
+                Behavior on opacity { NumberAnimation { duration: 150 } }
+                gradient: Gradient {
+                  orientation: Gradient.Horizontal
+                  GradientStop { position: Math.max(0.0, stackCard.sheenNormX - 0.28); color: "transparent" }
+                  GradientStop { position: stackCard.sheenNormX; color: Util.alpha("#ffffff", 0.18) }
+                  GradientStop { position: Math.min(1.0, stackCard.sheenNormX + 0.28); color: "transparent" }
+                }
+              }
             }
 
             // Floating Left Nav Arrow (Docked inside Hero Card)
             Rectangle {
               visible: stackCard.isHero && root.imageArray.length > 1
+              opacity: root.peekMode ? 0.0 : 1.0
+              Behavior on opacity { NumberAnimation { duration: 180 } }
               anchors.left: parent.left
               anchors.leftMargin: Style.space(16)
               anchors.verticalCenter: parent.verticalCenter
@@ -1066,6 +1424,8 @@ Item {
             // Floating Right Nav Arrow (Docked inside Hero Card)
             Rectangle {
               visible: stackCard.isHero && root.imageArray.length > 1
+              opacity: root.peekMode ? 0.0 : 1.0
+              Behavior on opacity { NumberAnimation { duration: 180 } }
               anchors.right: parent.right
               anchors.rightMargin: Style.space(16)
               anchors.verticalCenter: parent.verticalCenter
@@ -1101,7 +1461,7 @@ Item {
 
             // Floating Ground Shadow beneath Hero Card
             Rectangle {
-              visible: stackCard.isHero
+              visible: stackCard.isHero && !root.peekMode
               anchors.horizontalCenter: parent.horizontalCenter
               anchors.top: parent.bottom
               anchors.topMargin: Style.space(10)
@@ -1114,7 +1474,9 @@ Item {
 
             // Glowing Ambient Rim on Hero Card
             Rectangle {
-              visible: stackCard.isHero
+              visible: stackCard.isHero && !root.peekMode
+              opacity: root.peekMode ? 0.0 : 1.0
+              Behavior on opacity { NumberAnimation { duration: 180 } }
               anchors.fill: parent
               anchors.margins: -Style.space(3)
               radius: Style.space(27)
@@ -1127,6 +1489,8 @@ Item {
             // High-Precision Specular Border
             Rectangle {
               anchors.fill: parent
+              opacity: root.peekMode ? 0.0 : 1.0
+              Behavior on opacity { NumberAnimation { duration: 180 } }
               radius: Style.space(24)
               color: "transparent"
               border.color: stackCard.isHero ? root.selectedBorder : (stackCard.isHovered ? Util.alpha(root.selectedBorder, 0.85) : Util.alpha(ShellCommons.Color.foreground, 0.20))
@@ -1140,6 +1504,8 @@ Item {
             Rectangle {
               anchors.fill: parent
               anchors.margins: 1
+              opacity: root.peekMode ? 0.0 : 1.0
+              Behavior on opacity { NumberAnimation { duration: 180 } }
               radius: Style.space(23)
               color: "transparent"
               border.color: stackCard.isHero ? Util.alpha("#ffffff", 0.22) : Util.alpha("#ffffff", 0.05)
@@ -1150,6 +1516,9 @@ Item {
             // Top Status Badges on Hero Card
             Row {
               visible: stackCard.isHero
+              z: 350
+              opacity: root.peekMode ? 0.0 : 1.0
+              Behavior on opacity { NumberAnimation { duration: 180 } }
               anchors.top: parent.top
               anchors.topMargin: Style.space(18)
               anchors.right: parent.right
@@ -1252,6 +1621,9 @@ Item {
             // Floating Frosted Info Dock inside Hero Card
             Rectangle {
               visible: stackCard.isHero
+              z: 350
+              opacity: root.peekMode ? 0.0 : 1.0
+              Behavior on opacity { NumberAnimation { duration: 180 } }
               anchors.left: parent.left
               anchors.right: parent.right
               anchors.bottom: parent.bottom
@@ -1344,6 +1716,93 @@ Item {
                           }
                         }
                       }
+
+                      // Dynamic Theme Color Harmony Swatches
+                      Rectangle {
+                        visible: !!stackCard.accentColorHex
+                        height: Style.space(22)
+                        width: swatchRow.width + Style.space(14)
+                        radius: Style.space(11)
+                        color: Util.alpha(ShellCommons.Color.background, 0.75)
+                        border.color: Util.alpha(ShellCommons.Color.foreground, 0.20)
+                        border.width: 1
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Row {
+                          id: swatchRow
+                          anchors.centerIn: parent
+                          spacing: Style.space(5)
+
+                          // Accent Dot
+                          Rectangle {
+                            width: Style.space(10)
+                            height: Style.space(10)
+                            radius: Style.space(5)
+                            color: stackCard.accentColorHex || root.selectedBorder
+                            border.color: Util.alpha("#ffffff", 0.40)
+                            border.width: 1
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+
+                          // BG Dot
+                          Rectangle {
+                            visible: !!stackCard.bgColorHex
+                            width: Style.space(10)
+                            height: Style.space(10)
+                            radius: Style.space(5)
+                            color: stackCard.bgColorHex || ShellCommons.Color.background
+                            border.color: Util.alpha("#ffffff", 0.30)
+                            border.width: 1
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+
+                          // FG Dot
+                          Rectangle {
+                            visible: !!stackCard.fgColorHex
+                            width: Style.space(10)
+                            height: Style.space(10)
+                            radius: Style.space(5)
+                            color: stackCard.fgColorHex || root.foreground
+                            border.color: Util.alpha("#ffffff", 0.30)
+                            border.width: 1
+                            anchors.verticalCenter: parent.verticalCenter
+                          }
+                        }
+                      }
+
+                      // Star / Favorite Toggle Button
+                      Rectangle {
+                        readonly property bool isFav: stackCard.themeName ? root.isFavorite(stackCard.themeName) : false
+                        height: Style.space(22)
+                        width: Style.space(22)
+                        radius: Style.space(11)
+                        color: isFav ? Util.alpha("#F59E0B", 0.25) : (starMouse.containsMouse ? Util.alpha(ShellCommons.Color.foreground, 0.15) : "transparent")
+                        border.color: isFav ? "#F59E0B" : (starMouse.containsMouse ? Util.alpha(ShellCommons.Color.foreground, 0.35) : Util.alpha(ShellCommons.Color.foreground, 0.20))
+                        border.width: 1
+                        anchors.verticalCenter: parent.verticalCenter
+                        scale: starMouse.pressed ? 0.88 : (starMouse.containsMouse ? 1.15 : 1.0)
+                        Behavior on scale { NumberAnimation { duration: 100 } }
+
+                        Text {
+                          anchors.centerIn: parent
+                          text: parent.isFav ? "★" : "☆"
+                          color: parent.isFav ? "#F59E0B" : (starMouse.containsMouse ? "#F59E0B" : Util.alpha(root.foreground, 0.50))
+                          font.pixelSize: Style.font.caption
+                          font.weight: Font.Bold
+                          font.family: Style.font.menuFamily
+                        }
+
+                        MouseArea {
+                          id: starMouse
+                          anchors.fill: parent
+                          hoverEnabled: true
+                          cursorShape: Qt.PointingHandCursor
+                          onClicked: {
+                            if (stackCard.themeName)
+                              root.toggleFavorite(stackCard.themeName)
+                          }
+                        }
+                      }
                     }
 
                     Text {
@@ -1417,6 +1876,8 @@ Item {
       // =======================================================================
       Item {
         id: scrubBar
+        opacity: root.peekMode ? 0.0 : 1.0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
         anchors.bottom: bottomHud.top
         anchors.bottomMargin: Style.space(14)
         anchors.horizontalCenter: parent.horizontalCenter
@@ -1478,11 +1939,13 @@ Item {
       // =======================================================================
       Rectangle {
         id: bottomHud
+        opacity: root.peekMode ? 0.0 : 1.0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
         anchors.bottom: parent.bottom
         anchors.bottomMargin: Style.space(12)
         anchors.horizontalCenter: parent.horizontalCenter
         height: Style.space(40)
-        width: bottomRow.width + Style.space(38)
+        width: bottomRow.width + Style.space(34)
         radius: Style.space(20)
         color: Util.alpha(ShellCommons.Color.background, 0.90)
         border.color: Util.alpha(ShellCommons.Color.foreground, 0.16)
@@ -1491,10 +1954,10 @@ Item {
         Row {
           id: bottomRow
           anchors.centerIn: parent
-          spacing: Style.space(14)
+          spacing: Style.space(10)
 
           Row {
-            spacing: Style.space(6)
+            spacing: Style.space(5)
             anchors.verticalCenter: parent.verticalCenter
             Rectangle {
               height: Style.space(22)
@@ -1503,28 +1966,13 @@ Item {
               color: Util.alpha(ShellCommons.Color.foreground, 0.12)
               Text { anchors.centerIn: parent; text: "◄ ►"; color: root.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
             }
-            Text { text: "Arc Deck"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
+            Text { text: "Deck"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
           }
 
           Rectangle { width: 1; height: Style.space(12); color: Util.alpha(ShellCommons.Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
           Row {
-            spacing: Style.space(6)
-            anchors.verticalCenter: parent.verticalCenter
-            Rectangle {
-              height: Style.space(22)
-              width: Style.space(56)
-              radius: Style.space(5)
-              color: Util.alpha(ShellCommons.Color.foreground, 0.12)
-              Text { anchors.centerIn: parent; text: "PgUp/Dn"; color: root.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
-            }
-            Text { text: "Jump ±5"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
-          }
-
-          Rectangle { width: 1; height: Style.space(12); color: Util.alpha(ShellCommons.Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
-
-          Row {
-            spacing: Style.space(6)
+            spacing: Style.space(5)
             anchors.verticalCenter: parent.verticalCenter
             Rectangle {
               height: Style.space(22)
@@ -1539,22 +1987,67 @@ Item {
           Rectangle { width: 1; height: Style.space(12); color: Util.alpha(ShellCommons.Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
           Row {
-            spacing: Style.space(6)
+            spacing: Style.space(5)
             anchors.verticalCenter: parent.verticalCenter
             Rectangle {
               height: Style.space(22)
-              width: Style.space(40)
+              width: Style.space(48)
               radius: Style.space(5)
               color: Util.alpha(ShellCommons.Color.foreground, 0.12)
-              Text { anchors.centerIn: parent; text: "Type"; color: root.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
+              Text { anchors.centerIn: parent; text: "Space"; color: root.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
             }
-            Text { text: "Filter"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
+            Text { text: "Peek"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
           }
 
           Rectangle { width: 1; height: Style.space(12); color: Util.alpha(ShellCommons.Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
 
           Row {
-            spacing: Style.space(6)
+            spacing: Style.space(5)
+            anchors.verticalCenter: parent.verticalCenter
+            Rectangle {
+              height: Style.space(22)
+              width: Style.space(46)
+              radius: Style.space(5)
+              color: Util.alpha(ShellCommons.Color.foreground, 0.12)
+              Text { anchors.centerIn: parent; text: "Ctrl+R"; color: root.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
+            }
+            Text { text: "Shuffle"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
+          }
+
+          Rectangle { width: 1; height: Style.space(12); color: Util.alpha(ShellCommons.Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+          Row {
+            spacing: Style.space(5)
+            anchors.verticalCenter: parent.verticalCenter
+            Rectangle {
+              height: Style.space(22)
+              width: Style.space(46)
+              radius: Style.space(5)
+              color: Util.alpha("#F59E0B", 0.22)
+              Text { anchors.centerIn: parent; text: "Ctrl+S"; color: "#F59E0B"; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
+            }
+            Text { text: "Star"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
+          }
+
+          Rectangle { width: 1; height: Style.space(12); color: Util.alpha(ShellCommons.Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+          Row {
+            spacing: Style.space(5)
+            anchors.verticalCenter: parent.verticalCenter
+            Rectangle {
+              height: Style.space(22)
+              width: Style.space(46)
+              radius: Style.space(5)
+              color: Util.alpha(ShellCommons.Color.foreground, 0.12)
+              Text { anchors.centerIn: parent; text: "Ctrl+M"; color: root.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
+            }
+            Text { text: "Sound"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
+          }
+
+          Rectangle { width: 1; height: Style.space(12); color: Util.alpha(ShellCommons.Color.foreground, 0.15); anchors.verticalCenter: parent.verticalCenter }
+
+          Row {
+            spacing: Style.space(5)
             anchors.verticalCenter: parent.verticalCenter
             Rectangle {
               height: Style.space(22)
@@ -1565,6 +2058,65 @@ Item {
             }
             Text { text: "Close"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
           }
+        }
+      }
+
+      // =======================================================================
+      // 5. FLOATING FULLSCREEN PEEK EXIT PILL
+      // =======================================================================
+      Rectangle {
+        id: peekExitPill
+        visible: root.peekMode
+        opacity: root.peekMode ? 1.0 : 0.0
+        Behavior on opacity { NumberAnimation { duration: 180 } }
+        anchors.bottom: parent.bottom
+        anchors.bottomMargin: Style.space(16)
+        anchors.horizontalCenter: parent.horizontalCenter
+        height: Style.space(40)
+        width: peekExitRow.width + Style.space(36)
+        radius: Style.space(20)
+        color: Util.alpha(ShellCommons.Color.background, 0.92)
+        border.color: Util.alpha(ShellCommons.Color.foreground, 0.25)
+        border.width: 1.5
+        z: 9999
+
+        Row {
+          id: peekExitRow
+          anchors.centerIn: parent
+          spacing: Style.space(10)
+
+          Rectangle {
+            height: Style.space(22)
+            width: Style.space(50)
+            radius: Style.space(6)
+            color: Util.alpha(root.selectedBorder, 0.25)
+            border.color: Util.alpha(root.selectedBorder, 0.50)
+            border.width: 1
+            Text {
+              anchors.centerIn: parent
+              text: "Space"
+              color: root.selectedBorder
+              font.pixelSize: Style.font.caption
+              font.weight: Font.Bold
+              font.family: Style.font.menuFamily
+            }
+          }
+
+          Text {
+            text: "Fullscreen Preview • Press Space, Esc or click to exit"
+            color: root.foreground
+            font.pixelSize: Style.font.caption
+            font.weight: Font.Medium
+            font.family: Style.font.menuFamily
+            anchors.verticalCenter: parent.verticalCenter
+          }
+        }
+
+        MouseArea {
+          anchors.fill: parent
+          hoverEnabled: true
+          cursorShape: Qt.PointingHandCursor
+          onClicked: root.togglePeek()
         }
       }
     }

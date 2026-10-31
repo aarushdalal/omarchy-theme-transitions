@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.5.0] - 2026-10-31
+
+- **Interactive 3D Motion, Theme Harmony Swatches & Favoriting Suite**:
+  - Add interactive 3D parallax cursor tracking ($X$ and $Y$ rotation axes) and a moving specular glass sheen across the active hero card.
+  - Propagate theme palette metadata (`accent`, `bg`, `fg`) in `omarchy-theme-switcher` through `.rows.tsv` and render live color harmony swatches inside the hero dock.
+  - Add theme favoriting with star button (`★`/`☆`) and `Ctrl+S` shortcut, persisted to `~/.local/state/omarchy/favorite-themes.json`.
+  - Add Favorites-only filter mode toggle in the top floating island (`★ Favorites`), isolating starred themes across groups with sub-millisecond filtering.
+  - Add "Surprise Me" roulette shuffle (`󰒝` / `Ctrl+R`) to quickly discover and animate to random wallpapers.
+  - Add immersive fullscreen wallpaper peeking (`󰍹` / `Space`) that smoothly fades away all UI chrome and displays the full-resolution master wallpaper with an exit pill.
+  - Add acoustic mechanical tick feedback via `canberra-gtk-play` on flips and scrubbing, toggleable via `Ctrl+M` or the audio button.
+  - Integrate native Qt 6 `WheelHandler` for fluid touchpad swipe and mouse-wheel navigation across the deck.
+  - Refine bottom shortcuts dock with clear badges (`◄ ► Deck`, `Enter Apply`, `Space Peek`, `Ctrl+R Shuffle`, `Ctrl+S Star`, `Ctrl+M Sound`, `Esc Close`).
+
 ## [1.4.0] - 2026-10-31
 
 - **Prismatic 3D Amphitheater Arc Deck Reference**:
