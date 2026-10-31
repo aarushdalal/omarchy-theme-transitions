@@ -355,10 +355,11 @@ Item {
   }
 
   function releaseNextDoneFile() {
-    if (releaseProc.running || doneFilesToRelease.length === 0) return
-
-    var path = doneFilesToRelease.shift()
-    releaseProc.command = ["bash", "-c", ": > " + Util.shellQuote(path)]
+    if (doneFilesToRelease.length === 0) return
+    var paths = doneFilesToRelease.splice(0, doneFilesToRelease.length)
+    var cmd = paths.map(function(p) { return ": > " + Util.shellQuote(p) }).join("; ")
+    releaseProc.running = false
+    releaseProc.command = ["bash", "-c", cmd]
     releaseProc.running = true
   }
 
