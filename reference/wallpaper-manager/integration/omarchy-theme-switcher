@@ -17,13 +17,25 @@ import wallpaper_groups as grouping
 EXTS = ['.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp']
 
 
-def preview(folder):
+def wallpaper(folder):
     bg = folder / 'backgrounds'
     if bg.is_dir():
-        image = next((p for p in sorted(bg.iterdir()) if p.is_file() and p.suffix.lower() in EXTS), None)
-        if image:
-            return image
-    return next((folder / ('preview' + ext) for ext in EXTS if (folder / ('preview' + ext)).is_file()), None)
+        for p in bg.iterdir():
+            if p.is_file() and p.suffix.lower() in EXTS:
+                return p
+    for ext in EXTS:
+        p = folder / ('preview' + ext)
+        if p.is_file():
+            return p
+    return None
+
+
+def preview(folder):
+    for ext in EXTS:
+        p = folder / ('preview' + ext)
+        if p.is_file():
+            return p
+    return wallpaper(folder)
 
 
 def main():
@@ -46,7 +58,8 @@ def main():
     library = config / 'wallpaper-library.json'
     known = json.loads(library.read_text()).get('wallpapers', {}) if library.is_file() else {}
     records = {s: {'title': labels.get(s, known.get(s, {}).get('title', display_name(s, labels)))} for s in folders}
-    images = {s: preview(folders[s]) or preview(stock / s) for s in folders}
+    images = {s: wallpaper(folders[s]) or wallpaper(stock / s) for s in folders}
+    thumbnails = {s: preview(folders[s]) or preview(stock / s) for s in folders}
     records = {s: r for s, r in records.items() if images[s]}
     buckets = grouping.members(records, data)
     current_group = grouping.group_for(current, data=data)
@@ -55,7 +68,7 @@ def main():
         for group in sorted(buckets, key=str.casefold):
             if group:
                 slugs = buckets[group]
-                cover = next((s for s in slugs if preview(folders[s]) or preview(stock / s)), None)
+                cover = next((s for s in slugs if images.get(s)), None)
                 if cover:
                     cards.append((group + ' (' + str(len(slugs)) + ')', cover, group))
             else:
@@ -66,14 +79,18 @@ def main():
     cache = Path(os.environ.get('XDG_CACHE_HOME', HOME / '.cache')) / 'omarchy/theme-selector-v5' / (args.mode + '-' + hashlib.sha256(current_group.encode()).hexdigest()[:12])
     cache.mkdir(parents=True, exist_ok=True)
     mapping, keep, selected = {}, set(), ''
+    thumbnails_map = {}
+    seen_stems = set()
     for label, slug, group in cards:
         image = images[slug]
         if not image:
             continue
+        thumb = thumbnails.get(slug, image)
         # Keep native labels readable; append a stable identity to avoid name collisions.
         label = label.replace('/', '∕').replace('\\', '∖').replace('\n', ' ')
-        if any(Path(p).stem == label for p in keep):
+        if label in seen_stems:
             label += ' — ' + slug
+        seen_stems.add(label)
         link = cache / (label + image.suffix.lower())
         keep.add(link.name)
         if not link.is_symlink() or os.readlink(link) != str(image):
@@ -81,6 +98,7 @@ def main():
             temporary.symlink_to(image)
             temporary.replace(link)
         mapping[str(link)] = slug
+        thumbnails_map[str(link)] = str(thumb)
         if slug == current or (args.mode == 'groups' and group and group == current_group):
             selected = str(link)
     for path in cache.iterdir():
@@ -95,6 +113,11 @@ def main():
     temporary = metadata.with_name(metadata.name + '.' + str(os.getpid()) + '.tmp')
     temporary.write_text(json.dumps(summary) + '\n')
     temporary.replace(metadata)
+    tsv_lines = [str(k) + '\t' + str(thumbnails_map.get(k, k)) for k in sorted(mapping.keys(), key=str.casefold)]
+    tsv_file = cache / '.rows.tsv'
+    tmp_tsv = tsv_file.with_name('.rows.tsv.' + str(os.getpid()) + '.tmp')
+    tmp_tsv.write_text('\n'.join(tsv_lines) + '\n')
+    tmp_tsv.replace(tsv_file)
     if args.prepare_only:
         print(json.dumps(info)); return 0
     if not mapping:

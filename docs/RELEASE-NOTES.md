@@ -1,3 +1,16 @@
+# omarchy-theme-transitions 1.4.0
+
+### Highlights
+
+- **Prismatic 3D Amphitheater Arc Deck Reference** (`reference/ImagePicker.qml`):
+  - Completely redesigned the gallery layout into a Prismatic 3D Arc Deck with symmetrical downward crescent fanning, keeping the central hero card commanding and unblocked at the top.
+  - Implemented GPU-accelerated anti-aliased masking (`MultiEffect` with `radius: 24`), eliminating rectangular image corner bleed and ensuring silky-smooth rounded borders on all cards without blank texture drops.
+  - Decoupled full-resolution 4K/1080p master wallpapers from instant-decode preview thumbnails in `omarchy-theme-switcher` and `omarchy-menu-images`, providing zero blur on the hero card while guaranteeing instantaneous startup and navigation across 2,050+ themes.
+  - Added the dynamic ambient atmospheric horizon canvas, radial halo glow, tactile deck scrubber ribbon with click-to-seek, and floating frosted glass docks.
+  - Enhanced group picker, import batch model, and workspace reference integrations for robust collection management.
+
+---
+
 # omarchy-theme-transitions 1.3.0
 
 Retry failed wallpaper imports directly from **History**, with their original folder and group choices.

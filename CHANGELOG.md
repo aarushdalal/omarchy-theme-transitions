@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.4.0] - 2026-10-31
+
+- **Prismatic 3D Amphitheater Arc Deck Reference**:
+  - Implement the Prismatic 3D Arc Deck layout in `reference/ImagePicker.qml` with symmetrical downward crescent fanning, keeping the central hero card commanding and unblocked at the top.
+  - Implement hardware-accelerated anti-aliased masking (`MultiEffect` with `radius: 24`), eliminating rectangular image corner bleed and ensuring silky-smooth rounded borders on all cards.
+  - Decouple full-resolution 4K/1080p master wallpapers from instant-decode preview thumbnails in `omarchy-theme-switcher` and `omarchy-menu-images`, providing zero blur on the hero card while guaranteeing instantaneous startup and navigation across 2,050+ themes.
+  - Add the dynamic ambient atmospheric horizon canvas, radial halo glow, tactile deck scrubber ribbon with click-to-seek, and floating frosted glass docks.
+  - Enhance group picker, import batch model, and workspace reference integrations for robust collection management.
+
 ## [1.3.0] - 2026-10-31
 
 - Add History → Retry failed with a preview and background confirmation. Retries preserve original folder, group, name, desktop and media settings.

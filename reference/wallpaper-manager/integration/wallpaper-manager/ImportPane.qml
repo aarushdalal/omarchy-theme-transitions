@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import "Selection.js" as Selection
+import "ImportBatchModel.js" as BatchModel
 ColumnLayout {
                     id: pane
                     property string anchor: ""
@@ -99,7 +100,7 @@ ColumnLayout {
                         function onFolderBatchesReady() { pane.showQueue = true }
                         function onDraftFolderChanged() {
                             var name = pane.manager.draftFolder.split("/").pop()
-                            batchGroup.setGroup(pane.manager.groups.indexOf(name) >= 0 ? name : "")
+                            batchGroup.setGroup(BatchModel.matchKnownGroup(name, pane.manager.groups))
                         }
                     }
                 }

@@ -36,7 +36,7 @@ ColumnLayout {
             required property string batchJson
             property var modelData: JSON.parse(batchJson)
             required property int index
-            onModelDataChanged: Qt.callLater(function() { groupChoice.setGroup(modelData.group) })
+            onModelDataChanged: Qt.callLater(function() { if (typeof modelData !== "undefined" && modelData) groupChoice.setGroup(modelData.group) })
             width: ListView.view.width; height: 96; radius: 8; color: manager.surface
             RowLayout {
                 anchors.fill: parent; anchors.margins: 10; spacing: 10
@@ -47,7 +47,7 @@ ColumnLayout {
                     Caption { Layout.fillWidth: true; text: modelData.label; elide: Text.ElideMiddle; maximumLineCount: 1; opacity: 0.65; font.pixelSize: 10 }
                     Caption { text: modelData.items.length + " wallpapers · " + modelData.target; opacity: 0.6 }
                 }
-                GroupPicker { id: groupChoice; objectName: "queue-group-" + index; enabled: !manager.busy; groups: manager.availableGroups || manager.groups; Layout.preferredWidth: 200; Component.onCompleted: setGroup(modelData.group); onGroupsChanged: Qt.callLater(function() { setGroup(modelData.group) }); onGroupEdited: value => manager.setQueuedGroup(index, value) }
+                GroupPicker { id: groupChoice; objectName: "queue-group-" + index; enabled: !manager.busy; groups: manager.availableGroups || manager.groups; Layout.preferredWidth: 200; Component.onCompleted: setGroup(modelData.group); onGroupsChanged: Qt.callLater(function() { if (typeof modelData !== "undefined" && modelData) setGroup(modelData.group) }); onGroupEdited: value => manager.setQueuedGroup(index, value) }
                 ActionButton { text: "↑"; enabled: !manager.busy && index > 0; onClicked: manager.moveBatch(index, -1) }
                 ActionButton { text: "↓"; enabled: !manager.busy && index < manager.queuedBatches.length - 1; onClicked: manager.moveBatch(index, 1) }
                 ActionButton { objectName: "remove-batch-" + index; text: "Remove"; enabled: !manager.busy; onClicked: manager.removeBatch(index) }

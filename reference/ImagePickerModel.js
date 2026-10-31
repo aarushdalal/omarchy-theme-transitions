@@ -21,14 +21,21 @@ function loadRows(rows) {
     var path = columns[0]
     if (!path) continue
 
-    var fileName = path.split("/").pop()
     if (seen[path]) continue
     seen[path] = true
+
+    var fileName = path.split("/").pop()
+    var name = nameForPath(path)
+    var label = labelForPath(path)
+    var thumb = columns[1] || path
 
     images.push({
       filePath: path,
       fileName: fileName,
-      thumbnailPath: columns[1] || path
+      name: name,
+      label: label,
+      thumbnailPath: thumb,
+      searchLower: (name + " " + label).toLowerCase()
     })
   }
 
@@ -37,17 +44,26 @@ function loadRows(rows) {
 
 function itemMatches(images, index, filterText) {
   if (!Array.isArray(images) || index < 0 || index >= images.length) return false
-  var needle = String(filterText || "").toLowerCase()
+  var needle = String(filterText || "").toLowerCase().trim()
   if (!needle) return true
 
-  var path = String(images[index].filePath || "")
+  var item = images[index]
+  if (!item) return false
+  if (item.searchLower) {
+    return item.searchLower.indexOf(needle) !== -1
+  }
+  var path = String(item.filePath || "")
   return nameForPath(path).toLowerCase().indexOf(needle) !== -1
       || labelForPath(path).toLowerCase().indexOf(needle) !== -1
 }
 
 function firstMatchingIndex(images, filterText) {
   var values = Array.isArray(images) ? images : []
+  var needle = String(filterText || "").toLowerCase().trim()
   for (var i = 0; i < values.length; i++) {
+    if (!needle) return i
+    var item = values[i]
+    if (item && item.searchLower && item.searchLower.indexOf(needle) !== -1) return i
     if (itemMatches(values, i, filterText)) return i
   }
 
@@ -56,10 +72,14 @@ function firstMatchingIndex(images, filterText) {
 
 function filteredPosition(images, index, filterText) {
   if (!filterText) return index
+  var needle = String(filterText || "").toLowerCase().trim()
+  if (!needle) return index
 
   var position = 0
   for (var i = 0; i < index; i++) {
-    if (itemMatches(images, i, filterText)) position++
+    var item = images[i]
+    var match = item && item.searchLower ? (item.searchLower.indexOf(needle) !== -1) : itemMatches(images, i, filterText)
+    if (match) position++
   }
 
   return position
@@ -84,6 +104,40 @@ function nextSelectedIndexForFilter(images, selectedIndex, filterText) {
   return firstMatchingIndex(images, filterText)
 }
 
+function filteredImages(images, filterText) {
+  var rows = []
+  var needle = String(filterText || "").toLowerCase().trim()
+  var values = Array.isArray(images) ? images : []
+  for (var i = 0; i < values.length; i++) {
+    var item = values[i]
+    var match = !needle || (item && item.searchLower ? item.searchLower.indexOf(needle) !== -1 : itemMatches(values, i, filterText))
+    if (match) {
+      rows.push({
+        originalIndex: i,
+        filePath: item.filePath,
+        thumbnailPath: item.thumbnailPath,
+        fileName: item.fileName,
+        label: item.label,
+        name: item.name
+      })
+    }
+  }
+  return rows
+}
+
+function positions(images, filterText) {
+  var result = [], position = 0
+  var needle = String(filterText || "").toLowerCase().trim()
+  var hasFilter = needle.length > 0
+  var len = Array.isArray(images) ? images.length : 0
+  for (var i = 0; i < len; i++) {
+    var item = images[i]
+    var match = !hasFilter || (item && item.searchLower ? item.searchLower.indexOf(needle) !== -1 : itemMatches(images, i, filterText))
+    result.push(match ? position++ : -1)
+  }
+  return result
+}
+
 if (typeof module !== "undefined") {
   module.exports = {
     nameForPath: nameForPath,
@@ -94,25 +148,8 @@ if (typeof module !== "undefined") {
     filteredPosition: filteredPosition,
     selectedFilteredPosition: selectedFilteredPosition,
     indexForSelectedImage: indexForSelectedImage,
-    nextSelectedIndexForFilter: nextSelectedIndexForFilter
+    nextSelectedIndexForFilter: nextSelectedIndexForFilter,
+    filteredImages: filteredImages,
+    positions: positions
   }
 }
-
-function filteredImages(images, filterText) {
-  var rows = []
-  for (var i = 0; i < images.length; i++) {
-    if (itemMatches(images, i, filterText)) {
-      rows.push({ originalIndex: i, filePath: images[i].filePath,
-                  thumbnailPath: images[i].thumbnailPath, fileName: images[i].fileName })
-    }
-  }
-  return rows
-}
-if (typeof module !== "undefined") module.exports.filteredImages = filteredImages
-
-function positions(images, filterText) {
-  var result = [], position = 0
-  for (var i = 0; i < images.length; i++) result.push(itemMatches(images, i, filterText) ? position++ : -1)
-  return result
-}
-if (typeof module !== "undefined") module.exports.positions = positions

@@ -24,7 +24,7 @@ Dialog {
                 anchors.fill: parent; anchors.margins: 10
                 ColumnLayout {
                     Layout.fillWidth: true; Layout.minimumWidth: 0
-                    Caption { Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight; text: modelData.message }
+                    Caption { Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight; text: modelData.message || "" }
                     Caption { Layout.fillWidth: true; maximumLineCount: 1; elide: Text.ElideRight; opacity: 0.65; text: modelData.id + " · " + modelData.completed + "/" + modelData.total + " processed · " + modelData.failed + " failed" }
                 }
                 ActionButton { objectName: "history-details-" + modelData.id; text: "Details"; enabled: !history.manager.busy; onClicked: { history.close(); history.manager.request({action:"job-details",id:modelData.id}) } }

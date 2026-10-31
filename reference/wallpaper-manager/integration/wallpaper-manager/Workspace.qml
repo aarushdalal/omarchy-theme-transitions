@@ -41,7 +41,7 @@ Item {
             return true
         } catch (e) { statusText = e.message; details += e.message + "\n"; return false }
     }
-    function setQueuedGroup(index, group) { if (index >= 0 && index < queuedBatches.length && queuedBatches[index].group !== group) queuedBatches = BatchModel.setGroup(queuedBatches, index, group) }
+    function setQueuedGroup(index, group) { var clean = (group && group !== "Ungrouped") ? group.trim() : ""; if (index >= 0 && index < queuedBatches.length && queuedBatches[index].group !== clean) queuedBatches = BatchModel.setGroup(queuedBatches, index, clean) }
     function removeBatch(index) { queuedBatches = queuedBatches.filter(function(b,i) { return i !== index }) }
     function moveBatch(index, direction) { var next = queuedBatches.slice(); var row = next.splice(index,1)[0]; next.splice(index+direction,0,row); queuedBatches = next }
     function startQueue() { confirmOperation({action:"queue-import",batches:queuedBatches,items:queuedBatches.map(function(b) { return {title:b.label + " → " + (b.group || "Ungrouped") + " · " + b.items.length + " wallpapers"} })}) }
@@ -125,7 +125,7 @@ Item {
         }
         if (event.retry_empty) { details = event.message; detailDialog.open() }
         if (event.folder_batches) {
-            var result = BatchModel.addFolders(queuedBatches, event.folder_batches, folderScanOptions)
+            var result = BatchModel.addFolders(queuedBatches, event.folder_batches, folderScanOptions, availableGroups)
             queuedBatches = result.batches
             statusText = result.added + " separate folder batches ready. Choose each group in Queue." + (result.skipped ? " " + result.skipped + " installed or queued sources skipped." : "")
             if (result.messages.length) { details += result.messages.join("\n") + "\n"; statusText += " See Details for empty folders or scan issues." }

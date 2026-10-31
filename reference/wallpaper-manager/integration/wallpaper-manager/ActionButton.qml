@@ -5,6 +5,7 @@ import qs.Commons as ShellCommons
 Button {
     id: button
     property bool primary: false
+    focusPolicy: Qt.ClickFocus | Qt.TabFocus
     implicitHeight: 34
     Layout.minimumWidth: 0
     leftPadding: 12; rightPadding: 12

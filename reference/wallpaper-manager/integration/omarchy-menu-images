@@ -26,14 +26,40 @@ def scan(dirs):
     return values
 
 def build_rows(dirs,selected=''):
+    if len(dirs) == 1:
+        precomputed = Path(dirs[0]).expanduser() / '.rows.tsv'
+        if precomputed.is_file():
+            try:
+                content = precomputed.read_text()
+                wanted = Path(selected).resolve() if selected else None
+                selected_path = ''
+                if wanted:
+                    for line in content.splitlines():
+                        parts = line.split('\t')
+                        if parts and Path(parts[0]).resolve() == wanted:
+                            selected_path = parts[0]
+                            break
+                return content, selected_path, []
+            except OSError:
+                pass
     CACHE.mkdir(parents=True,exist_ok=True)
     rows=[];jobs=[];selected_path='';wanted=Path(selected).resolve() if selected else None
     for path,stat in scan(dirs):
-        key=hashlib.sha256((str(path.resolve())+':'+str(stat.st_size)+':'+str(stat.st_mtime_ns)).encode()).hexdigest()[:24]
-        thumbnail=CACHE/(key+'.jpg')
-        rows.append(str(path)+'\t'+str(thumbnail if thumbnail.is_file() else path))
+        theme_preview=None
+        if path.parent.name == 'backgrounds':
+            for ext in EXTS:
+                candidate = path.parent.parent / ('preview' + ext)
+                if candidate.is_file():
+                    theme_preview = candidate
+                    break
+        if theme_preview:
+            thumbnail = theme_preview
+        else:
+            key=hashlib.sha256((str(path.resolve())+':'+str(stat.st_size)+':'+str(stat.st_mtime_ns)).encode()).hexdigest()[:24]
+            thumbnail=CACHE/(key+'.jpg')
+            if not thumbnail.is_file():jobs.append([str(path.resolve()),str(thumbnail)])
+        rows.append(str(path)+'\t'+str(thumbnail if (theme_preview or thumbnail.is_file()) else path))
         if wanted and path.resolve()==wanted:selected_path=str(path)
-        if not thumbnail.is_file():jobs.append([str(path.resolve()),str(thumbnail)])
     return '\n'.join(rows),selected_path,jobs
 
 def generate(pair):
@@ -58,7 +84,7 @@ def worker():
                 if attempt == 19:return
                 time.sleep(.05)
         os.nice(15)
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        with ThreadPoolExecutor(max_workers=min(8, os.cpu_count() or 4)) as pool:
             # Keep pending work durable if another picker queues during a batch.
             while True:
                 files=sorted(CACHE.glob('queue-*.json'))
