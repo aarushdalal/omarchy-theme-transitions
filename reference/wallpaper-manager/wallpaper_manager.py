@@ -101,6 +101,9 @@ def edit(request):
 
 def execute(request):
     action = request.get('action', 'snapshot')
+    if action in {'draft-save', 'draft-load'}:
+        import wallpaper_jobs
+        return wallpaper_jobs.save_draft(request.get('batches', [])) if action == 'draft-save' else wallpaper_jobs.load_draft()
     if action == 'browser-places':
         from wallpaper_sources import mounted_places
         return {'places': mounted_places()}
@@ -109,7 +112,12 @@ def execute(request):
         return scan_folders(request.get('paths', []), request.get('recursive') is True)
     if action == 'queue-import':
         import wallpaper_jobs
-        return wallpaper_jobs.submit(request)
+        result = wallpaper_jobs.submit(request)
+        try:
+            wallpaper_jobs.save_draft([])
+        except OSError:
+            result['message'] += ' The import started, but the saved draft could not be cleared.'
+        return result
     if action == 'jobs':
         import wallpaper_jobs
         return {'jobs': wallpaper_jobs.list_jobs()}

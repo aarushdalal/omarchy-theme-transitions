@@ -13,7 +13,9 @@ This optional user-owned Quickshell manager extends the theme picker with mounte
 
 Scanning does not install wallpapers, assign existing themes to groups, or change the active wallpaper. The library retains explicit grouping, display names, group covers, multi-selection and recoverable removal. File selection still supports per-wallpaper names and explicit recovered-asset selection before queuing.
 
-Pre-start drafts live in the loaded GUI session. Start or finish editing them before reloading the shell. Submitted requests and progress are durable in `data/jobs/`; installation recovery is in `data/backups/`. Source originals are preserved. Reusing an already installed theme name requires an explicit replace choice and retains recovery files.
+Queue drafts save automatically in `data/pending-draft.json` and restore after shell reloads. Submitted requests and progress are durable in `data/jobs/`; installation recovery is in `data/backups/`. Source originals are preserved. Reusing an already installed theme name requires an explicit replace choice and retains recovery files.
+
+Only one compact active-job status appears below the queue. Previous runs stay in the separate **History** window with their own **Details**, so repeated runs cannot crowd out folder controls. Editing a group updates its existing row and preserves the current scroll position. Configured backup destinations are checked before job acceptance; a missing destination causes one setup error before image processing and keeps the draft for retry.
 
 ## Requirements
 

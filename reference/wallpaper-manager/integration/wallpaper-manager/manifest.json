@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "daemon0.wallpaper-manager",
   "name": "Wallpaper Manager",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "author": "Daemon0",
   "description": "Manage themes and queue folder batches with independent groups and durable background imports",
   "kinds": [

@@ -11,7 +11,8 @@ Item {
     id: root
     readonly property string home: Quickshell.env("HOME")
     property bool opened: false
-    property bool busy: worker.busy
+    property bool draftLoaded: false
+    property bool busy: worker.busy || !draftLoaded
     property string page: "library"
     property var items: []
     property var groups: []
@@ -20,6 +21,8 @@ Item {
     property var incoming: ({})
     property bool recursiveScan: false
     property var queuedBatches: []
+    onQueuedBatchesChanged: if (draftLoaded) draftSaveTimer.restart()
+    Component.onCompleted: draftWorker.send({action:"draft-load"})
     property var backgroundJobs: []
     property var browserPlaces: [{name: "Home", path: home}, {name: "File system", path: "/"}]
     property var folderScanOptions: ({})
@@ -111,7 +114,7 @@ Item {
         if (event.event === "item") details += event.slug + ": " + event.status + "\n" + event.details + "\n"
         if (event.event !== "result") return
         lastResult = event
-        if (!event.ok) { statusText = event.message; details += event.message + "\n"; return }
+        if (!event.ok) { statusText = event.message; operationSummary = event.message; details += event.message + "\n"; return }
         if (event.jobs) backgroundJobs = event.jobs
         if (event.job_details !== undefined) { details = event.job_details; detailDialog.open() }
         if (event.queued_job) { queuedBatches = []; candidates = []; incoming = ({}) }
@@ -154,9 +157,11 @@ Item {
         function open(): void { root.open() }
         function close(): void { root.close() }
         function toggle(): void { root.toggle() }
-        function status(): string { return JSON.stringify({revision: "modular-7-folders", places: root.browserPlaces, queuedBatches: root.queuedBatches.length, queuedWallpapers: root.queuedCount, jobs: root.backgroundJobs, opened: root.opened, busy: root.busy, page: root.page, themes: root.items.length, visible: root.visibleItems.length, groups: root.groups, selected: root.selectedSlugs, candidates: root.candidates.length, failures: root.failures, status: root.statusText, error: root.lastResult.ok === false ? root.lastResult.message : ""}) }
+        function status(): string { return JSON.stringify({revision: "modular-8-history", draftLoaded: root.draftLoaded, places: root.browserPlaces, queuedBatches: root.queuedBatches.length, queuedWallpapers: root.queuedCount, jobs: root.backgroundJobs, opened: root.opened, busy: root.busy, page: root.page, themes: root.items.length, visible: root.visibleItems.length, groups: root.groups, selected: root.selectedSlugs, candidates: root.candidates.length, failures: root.failures, status: root.statusText, error: root.lastResult.ok === false ? root.lastResult.message : ""}) }
+        function draft(): string { return JSON.stringify({batches:root.queuedBatches}) }
         function view(page: string): void {
             if (page === "folders") { root.page = "add"; root.open(); root.openFolder() }
+            else if (page === "queue") { root.page = "add"; importPane.showQueue = true; root.open() }
             else if (page === "library" || page === "add") { root.page = page; root.open() }
         }
     }
@@ -174,6 +179,21 @@ Item {
             }
         }
     }
+    BackendRequest {
+        id: draftWorker
+        backend: root.backend
+        onEventReceived: event => {
+            if (event.draft_batches !== undefined) root.queuedBatches = event.draft_batches
+            if (!event.ok) root.details += "Draft: " + event.message + "\n"
+        }
+        onFinished: {
+            if (!root.draftLoaded) {
+                root.draftLoaded = true
+                if (root.opened) Qt.callLater(function() { root.request({action:"snapshot"}) })
+            }
+        }
+    }
+    Timer { id: draftSaveTimer; interval: 250; onTriggered: { if (draftWorker.busy) restart(); else draftWorker.send({action:"draft-save",batches:root.queuedBatches}) } }
     BackendRequest {
         id: placesWorker
         backend: root.backend
@@ -273,6 +293,7 @@ Item {
             SourceBrowser { id: browser; manager: root; parent: card; anchors.centerIn: parent; onPicked: paths => { if (folderMode) root.discoverFolders(paths, importPane.batchOptions()); else root.discover(paths) } }
             Dialog {
                 id: confirmation
+                popupType: Popup.Item
                 anchors.centerIn: parent; width: Math.min(560, card.width - 50); modal: true; title: root.pending && root.pending.action === "delete-group" ? "Dissolve group?" : "Review operation"
                 standardButtons: Dialog.Ok | Dialog.Cancel
                 contentItem: ColumnLayout {
@@ -286,7 +307,7 @@ Item {
                 onAccepted: if (root.pending) { var payload = Object.assign({}, root.pending); payload.confirmed = true; root.details = ""; root.request(payload); root.pending = null }
             }
             Dialog {
-                id: detailDialog; anchors.centerIn: parent; width: Math.min(800, card.width - 40); height: Math.min(500, card.height - 40); modal: true; title: "Operation details"; standardButtons: Dialog.Close
+                id: detailDialog; popupType: Popup.Item; anchors.centerIn: parent; width: Math.min(800, card.width - 40); height: Math.min(500, card.height - 40); modal: true; title: "Operation details"; standardButtons: Dialog.Close
                 contentItem: ScrollView { TextArea { text: root.details || "No operations yet."; readOnly: true; selectByMouse: true; wrapMode: Text.Wrap; font.pixelSize: 12 } }
             }
         }

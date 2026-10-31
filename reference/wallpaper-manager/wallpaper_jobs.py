@@ -17,6 +17,32 @@ def root():
     return core.PROJECT / 'data/jobs'
 
 
+def draft_path():
+    return core.PROJECT / 'data/pending-draft.json'
+
+
+def save_draft(batches):
+    if not isinstance(batches, list):
+        raise core.ImportFailure('Invalid folder draft.')
+    atomic(draft_path(), {'batches': batches})
+    return {'draft_saved': True}
+
+
+def load_draft():
+    path = draft_path()
+    return {'draft_batches': json.loads(path.read_text()).get('batches', []) if path.is_file() else []}
+
+
+def preflight(batches):
+    paths = core.Locations()
+    destinations = [core.PROJECT, paths.registry, paths.library / '__import_check__']
+    if any(batch['target'] in {'omarchy', 'both'} for batch in batches):
+        destinations.append(paths.themes / '__import_check__')
+    if any(batch.get('mode') == 'video' or any(Path(item['source']).suffix.lower() not in core.IMAGES for item in batch['items']) for batch in batches):
+        destinations.append(paths.videos / '__import_check__')
+    core.check_backup_coverage(paths, destinations)
+
+
 def atomic(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + '.' + str(os.getpid()) + '.tmp')
@@ -78,6 +104,12 @@ def validate(request):
 
 def submit(request):
     batches = validate(request)
+    try:
+        preflight(batches)
+    except core.ImportFailure:
+        # Retain an exact, unsubmitted draft even for an older loaded GUI.
+        save_draft(batches)
+        raise
     folder = root(); folder.mkdir(parents=True, exist_ok=True)
     job_id = datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '-' + uuid.uuid4().hex[:6]
     directory = folder / job_id; directory.mkdir()

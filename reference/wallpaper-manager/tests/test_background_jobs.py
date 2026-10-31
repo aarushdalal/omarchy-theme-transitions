@@ -35,6 +35,35 @@ class BackgroundJobsTests(unittest.TestCase):
         with self.assertRaises(core.ImportFailure):jobs.validate(request)
         self.assertFalse(jobs.root().exists())
 
+    def test_preflight_rejects_uncovered_library_before_spawning_and_keeps_draft(self):
+        paths=core.Locations();config=paths.config/'omarchy/cloud-sync.json'
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({'folders':[
+            {'enabled':True,'type':'directory','path':str(self.project)},
+            {'enabled':True,'type':'directory','path':str(paths.config)}]}))
+        manifest=config.parent/'manifests/DAEMONOS_BACKUP_MANIFEST.json'
+        manifest.parent.mkdir();manifest.write_text('{}');manifest.with_suffix('.md').write_text('# Backup\n')
+        request=self.request()
+        with patch.object(jobs.subprocess,'Popen') as spawn,patch.object(manager,'execute') as execute:
+            with self.assertRaisesRegex(core.ImportFailure,'coverage is missing'):
+                jobs.submit(request)
+        spawn.assert_not_called();execute.assert_not_called()
+        self.assertFalse(jobs.root().exists())
+        self.assertEqual(jobs.load_draft()['draft_batches'],jobs.validate(request))
+
+    def test_draft_round_trip_keeps_folder_groups_options_and_can_clear(self):
+        batches=self.request()['batches']
+        manager.execute({'action':'draft-save','batches':batches})
+        self.assertEqual(manager.execute({'action':'draft-load'})['draft_batches'],batches)
+        manager.execute({'action':'draft-save','batches':[]})
+        self.assertEqual(manager.execute({'action':'draft-load'})['draft_batches'],[])
+
+    def test_submit_checks_video_destination_when_needed(self):
+        request=self.request();request['batches'][0]['mode']='video'
+        with patch.object(core,'check_backup_coverage') as coverage,patch.object(jobs.subprocess,'Popen'):
+            jobs.submit(request)
+        self.assertIn(core.Locations().videos/'__import_check__',coverage.call_args.args[1])
+
     def test_background_folder_batches_keep_separate_groups_and_targets(self):
         with patch.object(jobs.subprocess,'Popen') as spawn:
             result=jobs.submit(self.request())

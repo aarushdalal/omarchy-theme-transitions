@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1] - 2026-10-31
+
+- Check configured backup destinations before starting image processing. Keep the unsubmitted draft when a setup requirement fails, instead of repeating the same failure for every wallpaper.
+- Move finished-run cards into a separate History window; keep a single compact active-job status in the queue.
+- Update existing queue rows when editing groups, preserving scroll position across large folder queues.
+- Save queued drafts automatically and restore them across shell reloads. Keep review/detail dialogs embedded in the manager.
+
 ## [1.2.0] - 2026-10-31
 
 - Add the optional Wallpaper Manager reference with mounted-drive places, folder checkboxes, Ctrl/Shift ranges and selections retained across drives.

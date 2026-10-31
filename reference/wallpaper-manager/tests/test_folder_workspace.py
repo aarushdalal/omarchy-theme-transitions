@@ -41,10 +41,16 @@ ShellRoot {
  FileView { id: receipt; path: OUTPUT; printErrors: false }
  Manager.Workspace { id: workspace }
  function finish(ok, message) { receipt.setText(JSON.stringify({ok:ok,message:message})); Qt.callLater(Qt.quit) }
- Component.onCompleted: workspace.discoverFolders(paths,{mode:"auto",allow_static_scenes:false,replace:false})
+ property bool started: false
  Timer {
   interval: 30; repeat: true; running: true
   onTriggered: {
+   if (!scene.started) {
+    if (!workspace.draftLoaded) return
+    scene.started=true
+    workspace.discoverFolders(scene.paths,{mode:"auto",allow_static_scenes:false,replace:false})
+    return
+   }
    if (workspace.busy || !workspace.lastResult.event) return
    if (!workspace.lastResult.ok) { scene.finish(false,workspace.lastResult.message); return }
    var batches=workspace.queuedBatches

@@ -437,14 +437,24 @@ def covered(path, folders):
     return False
 
 
+def check_backup_coverage(paths, destinations):
+    config = paths.config / 'omarchy/cloud-sync.json'
+    if not config.exists() or not (paths.config / 'omarchy/manifests/DAEMONOS_BACKUP_MANIFEST.json').is_file() or not (paths.config / 'omarchy/manifests/DAEMONOS_BACKUP_MANIFEST.md').is_file():
+        return
+    folders = read_json(config).get('folders', [])
+    for path in destinations:
+        if not covered(path, folders):
+            raise ImportFailure(f'Backup coverage is missing for {path}. Add it before importing.')
+
+
 def backup_metadata(paths, record, tx):
     config = paths.config / 'omarchy/cloud-sync.json'
     if not config.exists() or not (paths.config / 'omarchy/manifests/DAEMONOS_BACKUP_MANIFEST.json').is_file() or not (paths.config / 'omarchy/manifests/DAEMONOS_BACKUP_MANIFEST.md').is_file():
-        return  # Standalone installs still retain per-import rollback journals.
-    folders = read_json(config).get('folders', [])
-    for path in [Path(record['installed_theme']), Path(record['image']), paths.registry, PROJECT]:
-        if not covered(path, folders):
-            raise ImportFailure(f'Backup coverage is missing for {path}. Add it before importing.')
+        return  # Portable installs still retain a per-import rollback journal.
+    destinations = [Path(record['installed_theme']), Path(record['image']), paths.registry, PROJECT]
+    if record.get('video'):
+        destinations.append(Path(record['video']))
+    check_backup_coverage(paths, destinations)
     manifest = paths.config / 'omarchy/manifests/DAEMONOS_BACKUP_MANIFEST.json'
     markdown = manifest.with_suffix('.md')
     data = read_json(manifest)
