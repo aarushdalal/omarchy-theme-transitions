@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1] - 2026-11-01
+
+- Show per-item loading and unavailable preview states without borrowing artwork from another selection; preserve same-item thumbnail fallback, explicit Apply and request serial guards.
+- Correct preview diagnostics to the existing seven-card bound and bounded original-image decoding.
+- Keep the optional Wallpaper Manager's five selectors compatible with the shell palette, focus, disabled states and Qt keyboard selection. Preserve desktop target defaults and library operations.
+- Add isolated Qt preview/selection tests and Manager keyboard/material tests. The preview checks do not apply a real desktop theme.
+
 ## [1.5.0] - 2026-10-31
 
 - **Interactive 3D Motion, Theme Harmony Swatches & Favoriting Suite**:

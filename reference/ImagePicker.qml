@@ -212,11 +212,12 @@ Item {
   IpcHandler {
     target: "daemon0-gallery-performance"
     function status(): string {
-      return JSON.stringify({revision: 6, wallpaperCount: root.totalWallpaperCount, countLabel: root.countLabel, scope: root.countScope, cards: root.imageArray.length, layout: "card-stack-deck", opened: root.opened,
+      return JSON.stringify({revision: 7, wallpaperCount: root.totalWallpaperCount, countLabel: root.countLabel, scope: root.countScope, cards: root.imageArray.length, layout: "card-stack-deck", opened: root.opened,
         preset: Motion.activePreset, reducedMotion: Motion.reducedMotion,
         entranceMs: root.animDuration, movementMs: root.moveDuration,
-        previewLimit: 5, boundedLayers: true, hiddenCardAnimations: false,
-        directBackdrop: true, originalSources: false, progressivePreviews: true, cardStack: true, pixelRatio: root.previewPixelRatio})
+        previewLimit: 7, boundedLayers: true, hiddenCardAnimations: false,
+        selectedPath: root.currentPath(), selectedLabel: root.currentLabel(), previewState: root.currentPreviewState(),
+        directBackdrop: true, originalSources: true, boundedDecode: true, progressivePreviews: true, cardStack: true, pixelRatio: root.previewPixelRatio})
     }
   }
 
@@ -254,6 +255,12 @@ Item {
   function currentPath() {
     if (imageArray.length === 0 || !itemMatches(selectedIndex)) return ""
     return imageArray[selectedIndex].filePath
+  }
+
+  function currentPreviewState() {
+    if (!currentPath()) return "empty"
+    var card = cardRepeater.itemAt(root.selectedIndex)
+    return card ? card.previewState : "loading"
   }
 
   function nameForPath(path) {
@@ -1082,6 +1089,7 @@ Item {
 
         // The Prismatic Fanned Arc Repeater
         Repeater {
+          id: cardRepeater
           model: root.imageArray.length
 
           delegate: Item {
@@ -1136,6 +1144,14 @@ Item {
             readonly property bool isHero: matched && index === root.selectedIndex
             readonly property bool inStack: matched && relativeIndex >= -3 && relativeIndex <= 3
             readonly property bool sourceActivated: root.opened && inStack
+            // Readiness belongs to this item: never borrow artwork from a prior selection.
+            readonly property bool previewReady: thumbImage.status === Image.Ready || heroMasterImage.status === Image.Ready
+            readonly property string previewState: {
+              if (!sourceActivated) return "inactive"
+              if (previewReady) return "ready"
+              if (thumbImage.status === Image.Error && (String(heroMasterImage.source) === "" || heroMasterImage.status === Image.Error)) return "error"
+              return "loading"
+            }
 
             property bool isHovered: false
 
@@ -1307,6 +1323,8 @@ Item {
               Image {
                 id: thumbImage
                 anchors.fill: parent
+                visible: status === Image.Ready
+                retainWhileLoading: false
                 source: (stackCard.sourceActivated && (stackCard.thumbnailPath || stackCard.filePath)) ? Util.fileUrl(stackCard.thumbnailPath || stackCard.filePath) : ""
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
@@ -1320,7 +1338,8 @@ Item {
               Image {
                 id: heroMasterImage
                 anchors.fill: parent
-                visible: stackCard.isHero && stackCard.filePath && (stackCard.filePath !== stackCard.thumbnailPath)
+                visible: stackCard.isHero && status === Image.Ready && stackCard.filePath && (stackCard.filePath !== stackCard.thumbnailPath)
+                retainWhileLoading: false
                 source: (stackCard.isHero && stackCard.sourceActivated && stackCard.filePath && (stackCard.filePath !== stackCard.thumbnailPath)) ? Util.fileUrl(stackCard.filePath) : ""
                 fillMode: Image.PreserveAspectCrop
                 asynchronous: true
@@ -1330,6 +1349,20 @@ Item {
                 mipmap: true
                 opacity: (status === Image.Ready) ? 1.0 : 0.0
                 Behavior on opacity { NumberAnimation { duration: 180 } }
+              }
+
+              // Pending/error feedback keeps the selected item's title and artwork coherent.
+              Text {
+                anchors.centerIn: parent
+                width: parent.width - Style.space(96)
+                visible: stackCard.isHero && (stackCard.previewState === "loading" || stackCard.previewState === "error")
+                text: stackCard.previewState === "error" ? "Preview unavailable" : "Loading preview…"
+                textFormat: Text.PlainText
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.WordWrap
+                color: Util.alpha(root.foreground, 0.82)
+                font.family: Style.font.menuFamily
+                font.pixelSize: Style.font.body
               }
 
               // 3. Cinematic Dark Vignette for Contrast & Text Legibility

@@ -82,7 +82,7 @@ RowLayout {
                             Caption { Layout.fillWidth: true; text: "Click · Ctrl-click · Shift-click"; opacity: 0.65 }
                             Caption { text: "MANAGE SELECTION"; font.bold: true; opacity: 0.65 }
                             Field { id: groupName; Layout.fillWidth: true; placeholderText: "Anime / type group name" }
-                            ComboBox { Layout.fillWidth: true; Layout.minimumWidth: 0; model: ["Choose existing group…"].concat(manager.groups); onActivated: if (currentIndex > 0) groupName.text = currentText }
+                            ThemedComboBox { Layout.fillWidth: true; Layout.minimumWidth: 0; model: ["Choose existing group…"].concat(manager.groups); onActivated: if (currentIndex > 0) groupName.text = currentText }
                             ActionButton { objectName: "move-group"; text: "Create / move to group"; Layout.fillWidth: true; enabled: !manager.busy && manager.selectedSlugs.length > 0 && groupName.text.trim().length > 0; onClicked: manager.request({action: "group", slugs: manager.selectedSlugs, group: groupName.text}) }
                             ActionButton { text: "Leave ungrouped"; Layout.fillWidth: true; enabled: !manager.busy && manager.selectedSlugs.length > 0; onClicked: manager.request({action: "group", slugs: manager.selectedSlugs, group: ""}) }
                             ActionButton { text: "Use as cover / first"; Layout.fillWidth: true; enabled: !manager.busy && manager.selectedSlugs.length === 1; onClicked: manager.request({action: "first", slugs: manager.selectedSlugs}) }

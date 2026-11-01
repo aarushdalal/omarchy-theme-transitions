@@ -87,7 +87,7 @@ ColumnLayout {
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        ComboBox { id: importMode; implicitWidth: 160; Layout.minimumWidth: 160; model: ["Automatic media", "Static image", "Video only"] }
+                        ThemedComboBox { id: importMode; implicitWidth: 160; Layout.minimumWidth: 160; model: ["Automatic media", "Static image", "Video only"] }
                         SelectionCheckBox { id: allowStatic; text: "Allow still recovery for scenes" }
                         SelectionCheckBox { id: replaceExisting; text: "Replace existing (with backup)" }
                         Item { Layout.fillWidth: true }

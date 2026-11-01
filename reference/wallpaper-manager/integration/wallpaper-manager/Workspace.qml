@@ -280,8 +280,8 @@ Item {
                     visible: root.page === "library"
                     Layout.fillWidth: true
                     Field { id: searchField; placeholderText: "Search themes or groups…  Ctrl+F"; Layout.fillWidth: true; onTextChanged: root.search = text }
-                    ComboBox { id: mediaFilter; model: ["All media", "Static", "Video"]; implicitWidth: 112 }
-                    ComboBox { id: desktopFilter; model: ["All desktops", "Omarchy", "DaemonOS"]; implicitWidth: 132 }
+                    ThemedComboBox { id: mediaFilter; model: ["All media", "Static", "Video"]; implicitWidth: 112 }
+                    ThemedComboBox { id: desktopFilter; model: ["All desktops", "Omarchy", "DaemonOS"]; implicitWidth: 132 }
                 }
                 LibraryPane { manager: root; Layout.fillWidth: true; Layout.fillHeight: true }
                 ImportPane { id: importPane; manager: root; Layout.fillWidth: true; Layout.fillHeight: true }
@@ -289,7 +289,7 @@ Item {
                 RowLayout {
                     Layout.fillWidth: true
                     Caption { text: "Add / remove on:" }
-                    ComboBox { id: targetBox; currentIndex: 1; model: ["Both desktops", "Omarchy", "DaemonOS"]; implicitWidth: 145 }
+                    ThemedComboBox { id: targetBox; currentIndex: 1; model: ["Both desktops", "Omarchy", "DaemonOS"]; implicitWidth: 145 }
                     BusyIndicator { running: root.busy; visible: root.busy; implicitWidth: 24; implicitHeight: 24 }
                     Caption { text: root.busy ? root.statusText : root.backgroundText || root.statusText; color: root.failures ? "#ffbd86" : root.fg; Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight }
                     ActionButton { text: root.failures ? "Details (" + root.failures + ")" : "Details"; primary: root.failures > 0; onClicked: detailDialog.open() }
