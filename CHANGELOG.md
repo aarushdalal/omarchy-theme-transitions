@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0] - 2026-11-02
+
+- Refine the optional Wallpaper Manager with calmer materials, finite entrance/interaction motion, larger artwork and clear selection actions.
+- Include the queued group editor repair: clearing and slow typing retain text/cursor through autosave and group-list refresh.
+- Cache group counts in one aggregate pass and reveal offscreen inspector controls during keyboard navigation. Preserve target defaults, import/retry/history and Apply behavior.
+- Add isolated presentation, unusual group-name, keyboard-scroll, compact layout and reduced-motion checks.
+
 ## [1.5.1] - 2026-11-01
 
 - Show per-item loading and unavailable preview states without borrowing artwork from another selection; preserve same-item thumbnail fallback, explicit Apply and request serial guards.

@@ -6,7 +6,8 @@ import qs.Commons as ShellCommons
 Basic.ComboBox {
     id: picker
     implicitWidth: 140
-    implicitHeight: 34
+    implicitHeight: 36
+    ManagerMotion { id: motion }
     font.pixelSize: 12
     hoverEnabled: true
     focusPolicy: Qt.ClickFocus | Qt.TabFocus
@@ -26,11 +27,13 @@ Basic.ComboBox {
     palette.disabled.windowText: Qt.alpha(ShellCommons.Color.foreground, 0.42)
 
     background: Rectangle {
-        radius: 6
+        radius: 8
         color: picker.hovered && picker.enabled
-            ? Qt.tint(ShellCommons.Color.background, Qt.alpha(ShellCommons.Color.foreground, 0.065))
+            ? Qt.tint(ShellCommons.Color.background, Qt.alpha(ShellCommons.Color.foreground, 0.08))
             : picker.palette.button
         border.color: picker.activeFocus ? ShellCommons.Color.accent
             : Qt.alpha(ShellCommons.Color.foreground, picker.enabled ? 0.18 : 0.1)
+        Behavior on color { enabled: !motion.reducedMotion; ColorAnimation { duration: motion.micro } }
+        Behavior on border.color { enabled: !motion.reducedMotion; ColorAnimation { duration: motion.micro } }
     }
 }

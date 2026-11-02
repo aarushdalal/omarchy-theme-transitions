@@ -11,6 +11,27 @@ Item {
     id: root
     readonly property string home: Quickshell.env("HOME")
     property bool opened: false
+    ManagerMotion { id: motion }
+    readonly property bool reducedMotion: motion.reducedMotion
+    property real presentationProgress: 0
+    onOpenedChanged: {
+        presentationAnimation.stop()
+        if (opened && !motion.reducedMotion) {
+            presentationProgress = 0
+            presentationAnimation.start()
+        } else presentationProgress = opened ? 1 : 0
+    }
+    NumberAnimation {
+        id: presentationAnimation
+        target: root; property: "presentationProgress"; from: 0; to: 1
+        duration: motion.standard; easing.type: motion.easing
+    }
+    Connections {
+        target: motion
+        function onReducedMotionChanged() {
+            if (motion.reducedMotion) { presentationAnimation.stop(); root.presentationProgress = root.opened ? 1 : 0 }
+        }
+    }
     property bool draftLoaded: false
     property bool busy: worker.busy || !draftLoaded
     property string page: "library"
@@ -163,7 +184,7 @@ Item {
         function open(): void { root.open() }
         function close(): void { root.close() }
         function toggle(): void { root.toggle() }
-        function status(): string { return JSON.stringify({revision: "modular-9-retry", draftLoaded: root.draftLoaded, places: root.browserPlaces, queuedBatches: root.queuedBatches.length, queuedWallpapers: root.queuedCount, jobs: root.backgroundJobs, opened: root.opened, busy: root.busy, page: root.page, themes: root.items.length, visible: root.visibleItems.length, groups: root.groups, selected: root.selectedSlugs, candidates: root.candidates.length, failures: root.failures, status: root.statusText, error: root.lastResult.ok === false ? root.lastResult.message : ""}) }
+        function status(): string { return JSON.stringify({revision: "modular-10-group-edit", premiumUI: true, uiRevision: "premium-manager-1", reducedMotion: root.reducedMotion, draftLoaded: root.draftLoaded, places: root.browserPlaces, queuedBatches: root.queuedBatches.length, queuedWallpapers: root.queuedCount, jobs: root.backgroundJobs, opened: root.opened, busy: root.busy, page: root.page, themes: root.items.length, visible: root.visibleItems.length, groups: root.groups, selected: root.selectedSlugs, candidates: root.candidates.length, failures: root.failures, status: root.statusText, error: root.lastResult.ok === false ? root.lastResult.message : ""}) }
         function draft(): string { return JSON.stringify({batches:root.queuedBatches}) }
         function view(page: string): void {
             if (page === "folders") { root.page = "add"; root.open(); root.openFolder() }
@@ -242,9 +263,12 @@ Item {
         Rectangle { anchors.fill: parent; color: "#b0000000"; MouseArea { anchors.fill: parent; onClicked: root.close() } }
         Rectangle {
             id: card
+            objectName: "manager-panel-card"
             anchors.centerIn: parent
-            width: Math.min(1160, panel.width - 32); height: Math.min(780, panel.height - 32)
-            color: root.bg; radius: 14; border.color: root.outline
+            width: Math.min(1240, panel.width - 40); height: Math.min(820, panel.height - 40)
+            color: root.bg; radius: 18; border.color: Qt.alpha(root.fg, 0.15)
+            opacity: motion.reducedMotion ? 1 : 0.76 + root.presentationProgress * 0.24
+            transform: Translate { y: motion.reducedMotion ? 0 : (1 - root.presentationProgress) * 10 }
             focus: true
             Keys.onPressed: function(event) {
                 if (event.modifiers & Qt.ControlModifier) {
@@ -261,39 +285,50 @@ Item {
             }
             MouseArea { anchors.fill: parent; onClicked: card.forceActiveFocus() }
             ColumnLayout {
-                anchors.fill: parent; anchors.margins: 18; spacing: 10
+                anchors.fill: parent; anchors.margins: 22; spacing: 14
                 RowLayout {
-                    Layout.fillWidth: true
+                    Layout.fillWidth: true; spacing: 14
                     ColumnLayout {
-                        spacing: 2
-                        Label { text: "Wallpaper Manager"; color: root.fg; font.pixelSize: 22; font.bold: true }
-                        Caption { text: "Your themes, your groups.  Super+Ctrl+M"; opacity: 0.65 }
+                        Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 4
+                        Label { text: "Wallpaper Manager"; color: root.fg; font.pixelSize: card.width < 950 ? 21 : 24; font.weight: Font.DemiBold; Layout.fillWidth: true; elide: Text.ElideRight }
+                        Caption { text: root.items.length + " themes  ·  " + root.groups.length + " groups  ·  Super+Ctrl+M"; color: Qt.alpha(root.fg, 0.58); font.pixelSize: 11 }
                     }
-                    Item { Layout.fillWidth: true }
-                    ActionButton { text: "Library"; primary: root.page === "library"; onClicked: root.page = "library" }
-                    ActionButton { text: "Add wallpapers"; primary: root.page === "add"; onClicked: root.page = "add" }
-                    ActionButton { text: "Refresh"; enabled: !root.busy; onClicked: root.request({action: "snapshot"}) }
-                    ActionButton { text: "Close"; onClicked: root.close() }
+                    Rectangle {
+                        implicitWidth: navigation.implicitWidth + 8; implicitHeight: 44
+                        color: Qt.alpha(root.fg, 0.025); radius: 11; border.color: Qt.alpha(root.fg, 0.08)
+                        RowLayout {
+                            id: navigation
+                            anchors.centerIn: parent; spacing: 4
+                            ActionButton { objectName: "manager-library-nav"; text: "Library"; primary: root.page === "library"; quiet: root.page !== "library"; onClicked: root.page = "library" }
+                            ActionButton { objectName: "manager-add-nav"; text: "Add wallpapers"; primary: root.page === "add"; quiet: root.page !== "add"; onClicked: root.page = "add" }
+                        }
+                    }
+                    ActionButton { text: "Refresh"; quiet: true; enabled: !root.busy; onClicked: root.request({action: "snapshot"}) }
+                    ActionButton { text: "Close"; quiet: true; onClicked: root.close() }
                 }
-                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.outline }
-                RowLayout {
+                Rectangle {
                     visible: root.page === "library"
-                    Layout.fillWidth: true
-                    Field { id: searchField; placeholderText: "Search themes or groups…  Ctrl+F"; Layout.fillWidth: true; onTextChanged: root.search = text }
-                    ThemedComboBox { id: mediaFilter; model: ["All media", "Static", "Video"]; implicitWidth: 112 }
-                    ThemedComboBox { id: desktopFilter; model: ["All desktops", "Omarchy", "DaemonOS"]; implicitWidth: 132 }
+                    Layout.fillWidth: true; Layout.preferredHeight: 56
+                    color: Qt.tint(root.bg, Qt.alpha(root.fg, 0.022)); radius: 12; border.color: Qt.alpha(root.fg, 0.065)
+                    RowLayout {
+                        anchors.fill: parent; anchors.margins: 10; spacing: 8
+                        Field { id: searchField; objectName: "manager-search"; placeholderText: "Search themes or groups…   Ctrl+F"; Layout.fillWidth: true; onTextChanged: root.search = text }
+                        ThemedComboBox { id: mediaFilter; model: ["All media", "Static", "Video"]; implicitWidth: 120 }
+                        ThemedComboBox { id: desktopFilter; model: ["All desktops", "Omarchy", "DaemonOS"]; implicitWidth: 136 }
+                    }
                 }
                 LibraryPane { manager: root; Layout.fillWidth: true; Layout.fillHeight: true }
                 ImportPane { id: importPane; manager: root; Layout.fillWidth: true; Layout.fillHeight: true }
-                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: root.outline }
+                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Qt.alpha(root.fg, 0.09) }
                 RowLayout {
-                    Layout.fillWidth: true
-                    Caption { text: "Add / remove on:" }
-                    ThemedComboBox { id: targetBox; currentIndex: 1; model: ["Both desktops", "Omarchy", "DaemonOS"]; implicitWidth: 145 }
-                    BusyIndicator { running: root.busy; visible: root.busy; implicitWidth: 24; implicitHeight: 24 }
-                    Caption { text: root.busy ? root.statusText : root.backgroundText || root.statusText; color: root.failures ? "#ffbd86" : root.fg; Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight }
-                    ActionButton { text: root.failures ? "Details (" + root.failures + ")" : "Details"; primary: root.failures > 0; onClicked: detailDialog.open() }
-                    ActionButton { text: "Recovery"; onClicked: Quickshell.execDetached(["xdg-open", Quickshell.env("HOME") + "/Projects/wallpaper-importer/data/backups"]) }
+                    Layout.fillWidth: true; spacing: 10
+                    Caption { text: "ADD / REMOVE ON"; color: Qt.alpha(root.fg, 0.55); font.pixelSize: 9; font.letterSpacing: 0.8 }
+                    ThemedComboBox { id: targetBox; currentIndex: 1; objectName: "manager-target"; model: ["Both desktops", "Omarchy", "DaemonOS"]; implicitWidth: 145 }
+                    BusyIndicator { running: root.busy; visible: root.busy; implicitWidth: 22; implicitHeight: 22 }
+                    Rectangle { width: 5; height: 5; radius: 3; color: root.failures ? "#d6b28d" : Qt.alpha(root.accent, 0.7) }
+                    Caption { text: root.busy ? root.statusText : root.backgroundText || root.statusText; color: root.failures ? "#e5c6a7" : Qt.alpha(root.fg, 0.7); Layout.fillWidth: true; maximumLineCount: 2; elide: Text.ElideRight; font.pixelSize: 11 }
+                    ActionButton { text: root.failures ? "Details (" + root.failures + ")" : "Details"; quiet: !root.failures; primary: root.failures > 0; onClicked: detailDialog.open() }
+                    ActionButton { text: "Recovery"; quiet: true; onClicked: Quickshell.execDetached(["xdg-open", Quickshell.env("HOME") + "/Projects/wallpaper-importer/data/backups"]) }
                 }
             }
             SourceBrowser { id: browser; manager: root; parent: card; anchors.centerIn: parent; onPicked: paths => { if (folderMode) root.discoverFolders(paths, importPane.batchOptions()); else root.discover(paths) } }

@@ -6,10 +6,16 @@ Basic.ComboBox {
     id: picker
     property var groups: []
     property string currentGroup: ""
+    property var menuGroups: []
+    property bool syncingText: false
     readonly property string groupValue: currentGroup
     signal groupEdited(string value)
 
-    model: ["Ungrouped"].concat(groups)
+    // Queue edits update available groups. Keep the menu stable while its
+    // editor owns focus so ComboBox cannot reset the text or cursor.
+    model: ["Ungrouped"].concat(menuGroups)
+    Component.onCompleted: refreshGroups()
+    onGroupsChanged: if (!activeFocus) refreshGroups()
     editable: true
     implicitWidth: 190
     implicitHeight: 34
@@ -34,12 +40,19 @@ Basic.ComboBox {
         commitTimer.stop()
         var val = editText ? editText.trim() : ""
         if (val === "Ungrouped") val = ""
-        currentGroup = val
-        groupEdited(val)
-        applyGroup()
+        if (currentGroup !== val) {
+            currentGroup = val
+            groupEdited(val)
+        }
+        // Persist the normalized value without rewriting an in-progress edit.
+        if (!activeFocus) applyGroup()
     }
 
-    onEditTextChanged: if (activeFocus) commitTimer.restart()
+    onEditTextChanged: if (activeFocus && !syncingText) commitTimer.restart()
+
+    function refreshGroups() {
+        menuGroups = groups.slice()
+    }
 
     function applyGroup() {
         var target = currentGroup || "Ungrouped"
@@ -50,28 +63,30 @@ Basic.ComboBox {
                 break
             }
         }
+        syncingText = true
         currentIndex = idx
         editText = currentGroup || "Ungrouped"
+        syncingText = false
     }
 
     function setGroup(value) {
         var clean = (value && value !== "Ungrouped") ? value.trim() : ""
-        if (currentGroup === clean && editText === (clean || "Ungrouped")) return
+        if (currentGroup === clean) return
         currentGroup = clean
         applyGroup()
     }
 
-    onModelChanged: Qt.callLater(applyGroup)
+    onModelChanged: Qt.callLater(function() { if (!activeFocus) applyGroup() })
 
     onActivated: (index) => {
         commitTimer.stop()
         var chosen = model[index] || ""
         var val = (chosen === "Ungrouped") ? "" : chosen
         currentGroup = val
-        editText = chosen
+        applyGroup()
         groupEdited(val)
     }
 
     onAccepted: commit()
-    onActiveFocusChanged: if (!activeFocus) commit()
+    onActiveFocusChanged: if (!activeFocus) { commit(); refreshGroups() }
 }
