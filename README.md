@@ -131,9 +131,14 @@ If you modify `shaders/transition.frag`, recompile to `.qsb` before deploying:
 
 ## Showcase
 
-**Omarchy Desktop Showcase**
+**Omarchy Theme Transitions Showcase — 1080p @ 60 FPS**
 
-https://github.com/user-attachments/assets/7c2473b5-d2b1-465a-a718-88189ca5579a
+[![Omarchy Theme Transitions Showcase Preview](assets/showcase/theme-transitions-showcase-2026-10-31.gif)](assets/showcase/theme-transitions-showcase-2026-10-31.webm)
+
+- **[▶ Watch / Download Full 1080p 60 FPS WebM Recording](assets/showcase/theme-transitions-showcase-2026-10-31.webm)**
+- **[View Poster Frame](assets/showcase/theme-transitions-showcase-2026-10-31.jpg)**
+
+Demonstrating real-time GLSL 440 GPU theme transitions (`aurora-flow`, `prism-shift`, `ink-spread`, `color-morph`), dual-slot VRAM ping-pong switching on `WlrLayer.Background`, and native wallpaper gallery integration.
 
 ---
 
