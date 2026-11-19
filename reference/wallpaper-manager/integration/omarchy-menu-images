@@ -145,6 +145,7 @@ def main():
         if result.returncode or result.stdout.strip()!='ok':
             reason=(result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}')
             print('Image selector did not accept the request: '+reason,file=sys.stderr);return 1
+        CACHE.mkdir(parents=True,exist_ok=True)
         atomic(CACHE/'last-open.json',json.dumps({'rows':len(rows.splitlines()),'ipc_seconds':round(time.monotonic()-started,4),'accepted':True}))
         try:
             checks = 0

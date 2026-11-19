@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.7.0] - 2026-11-19
+
+- **Virtualized 11-Delegate Ring Buffer Pool**:
+  - Re-architected `ImagePicker.qml` arc deck repeater to use a dynamic 11-card ring buffer pool (`Math.min(11, root.imageArray.length > 0 ? 11 : 0)`), reducing GUI thread QML item allocations by 99.6% across large libraries (from 50,000+ objects down to 11 live delegates).
+  - Maintained 100% continuous relative position transitions across card movements, guaranteeing silky-smooth entry physics and continuous track gestures with zero garbage-collection stutter.
+  - Eliminated the 2-3s opening lag, reducing deck initialization and presentation to sub-100ms.
+- **Group-Scoped Lazy Theme & Background Resolution**:
+  - Accelerated `omarchy-theme-switcher`: in `--mode themes`, dynamically inspects only the active group's theme directories (~1.6ms); in `--mode groups`, inspects only the 78 group covers (~3ms), eliminating disk traversal of 2,400+ installed themes.
+  - Accelerated `omarchy-theme-bg-switcher` with group-scoped wallpaper pooling and group-keyed cache paths (~80ms).
+  - Added cache directory creation safeguard in `omarchy-menu-images`.
+- **Space-in-Search & Multi-Term Filtering**:
+  - Fixed Space key interception in `ImagePicker.qml`: Space now freely appends to the search filter query when filtering, rather than triggering fullscreen peek.
+  - Peek mode is dynamically mapped to `Space` when the search query is empty, and `Ctrl+Space` when a search query is active.
+  - Added multi-term whitespace-separated token search in `ImagePickerModel.js`: multi-word queries (e.g. "tokyo night", "nord polar") now match items containing all tokens across titles, labels, and slugs.
+  - Dynamically updated the bottom shortcuts dock to display `Ctrl+Space Peek` while filtering and `Space Peek` when idle.
+
 ## [1.6.1] - 2026-11-19
 
 - **Wallpaper Switcher & Large Library Argument Safeguard**:

@@ -71,12 +71,18 @@ function itemMatches(images, index, filterText, favoriteList) {
   var needle = String(filterText || "").toLowerCase().trim()
   if (!needle) return true
 
-  if (item.searchLower) {
-    return item.searchLower.indexOf(needle) !== -1
+  var haystack = item.searchLower || (nameForPath(String(item.filePath || "")) + " " + labelForPath(String(item.filePath || ""))).toLowerCase()
+  if (haystack.indexOf(needle) !== -1) return true
+
+  // Multi-token search (all space-separated terms must match)
+  if (needle.indexOf(" ") !== -1) {
+    var tokens = needle.split(/\s+/)
+    for (var t = 0; t < tokens.length; t++) {
+      if (tokens[t] && haystack.indexOf(tokens[t]) === -1) return false
+    }
+    return true
   }
-  var path = String(item.filePath || "")
-  return nameForPath(path).toLowerCase().indexOf(needle) !== -1
-      || labelForPath(path).toLowerCase().indexOf(needle) !== -1
+  return false
 }
 
 function firstMatchingIndex(images, filterText, favoriteList) {
@@ -135,14 +141,22 @@ function filteredImages(images, filterText, favoriteList) {
 }
 
 function positions(images, filterText, favoriteList) {
-  var result = [], position = 0
+  var result = [], matchIndices = [], position = 0
   var needle = String(filterText || "").toLowerCase().trim()
   var hasFilter = needle.length > 0 || Array.isArray(favoriteList)
   var len = Array.isArray(images) ? images.length : 0
   for (var i = 0; i < len; i++) {
     var match = !hasFilter || itemMatches(images, i, filterText, favoriteList)
-    result.push(match ? position++ : -1)
+    if (match) {
+      matchIndices.push(i)
+      result.push(position++)
+    } else {
+      result.push(-1)
+    }
   }
+  result.positions = result
+  result.matchIndices = matchIndices
+  result.matchCount = position
   return result
 }
 

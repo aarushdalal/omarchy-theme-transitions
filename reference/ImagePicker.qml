@@ -31,8 +31,9 @@ Item {
 
   property var themeSummary: ({})
   readonly property int totalWallpaperCount: showLabels && Number(themeSummary.total_wallpapers) > 0 ? Number(themeSummary.total_wallpapers) : imageArray.length
+  readonly property int filterMatchCount: filterPositions && typeof filterPositions.matchCount === "number" ? filterPositions.matchCount : (filterPositions ? filterPositions.filter(function(p) { return p >= 0 }).length : imageArray.length)
   readonly property string countLabel: totalWallpaperCount + (totalWallpaperCount === 1 ? " wallpaper" : " wallpapers")
-  readonly property string countScope: filterText ? filterPositions.filter(function(p) { return p >= 0 }).length + " matches" : themeSummary.mode === "groups" ? themeSummary.group_count + " groups" : themeSummary.mode === "themes" ? imageArray.length + " in this group" : "All themes"
+  readonly property string countScope: filterText ? filterMatchCount + " matches" : themeSummary.mode === "groups" ? themeSummary.group_count + " groups" : themeSummary.mode === "themes" ? (themeSummary.group_wallpapers || imageArray.length) + " in this group" : "All themes"
   FileView {
     id: countMetadata
     path: root.showLabels && root.imageArray.length ? String(root.imageArray[0].filePath).replace(/\/[^/]*$/, "/.selector-info.json") : ""
@@ -174,6 +175,7 @@ Item {
   readonly property int animDuration: Motion.reducedMotion ? 1 : Math.min(220, Motion.entryDuration)
   readonly property int moveDuration: Motion.reducedMotion ? 1 : Math.min(220, Math.round(Motion.liquidMoveDuration * 0.75))
   readonly property var filterPositions: ImagePickerModel.positions(root.imageArray, root.filterText, root.showOnlyFavorites ? root.favorites : null)
+  readonly property int totalMatchesCount: root.filterText || root.showOnlyFavorites ? root.filterMatchCount : root.imageArray.length
   readonly property var animEasingType: Motion.easeExpressive
   readonly property real animOvershoot: Motion.springOvershoot
   readonly property string animStyleDisplay: Motion.presetHumanName(Motion.activePreset)
@@ -212,10 +214,10 @@ Item {
   IpcHandler {
     target: "daemon0-gallery-performance"
     function status(): string {
-      return JSON.stringify({revision: 7, wallpaperCount: root.totalWallpaperCount, countLabel: root.countLabel, scope: root.countScope, cards: root.imageArray.length, layout: "card-stack-deck", opened: root.opened,
+      return JSON.stringify({revision: 8, wallpaperCount: root.totalWallpaperCount, countLabel: root.countLabel, scope: root.countScope, cards: root.imageArray.length, layout: "card-stack-deck", opened: root.opened,
         preset: Motion.activePreset, reducedMotion: Motion.reducedMotion,
         entranceMs: root.animDuration, movementMs: root.moveDuration,
-        previewLimit: 7, boundedLayers: true, hiddenCardAnimations: false,
+        virtualizedDelegates: 11, boundedLayers: true, hiddenCardAnimations: false,
         selectedPath: root.currentPath(), selectedLabel: root.currentLabel(), previewState: root.currentPreviewState(),
         directBackdrop: true, originalSources: true, boundedDecode: true, progressivePreviews: true, cardStack: true, pixelRatio: root.previewPixelRatio})
     }
@@ -259,8 +261,11 @@ Item {
 
   function currentPreviewState() {
     if (!currentPath()) return "empty"
-    var card = cardRepeater.itemAt(root.selectedIndex)
-    return card ? card.previewState : "loading"
+    for (var i = 0; i < cardRepeater.count; i++) {
+      var card = cardRepeater.itemAt(i)
+      if (card && card.isHero) return card.previewState
+    }
+    return "loading"
   }
 
   function nameForPath(path) {
@@ -1041,7 +1046,7 @@ Item {
               root.cancel()
             }
             event.accepted = true
-          } else if (event.key === Qt.Key_Space || (event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier || !root.filterable))) {
+          } else if (((event.key === Qt.Key_Space && (event.modifiers & Qt.ControlModifier || !root.filterable || !root.filterText)) || (event.key === Qt.Key_F && (event.modifiers & Qt.ControlModifier || !root.filterable)))) {
             root.togglePeek()
             event.accepted = true
           } else if (event.key === Qt.Key_R && (event.modifiers & Qt.ControlModifier || !root.filterable)) {
@@ -1060,6 +1065,9 @@ Item {
             event.accepted = true
           } else if (root.filterable && Util.editsFilter(event, root.filterText)) {
             root.updateFilter(Util.editedFilter(event, root.filterText))
+            event.accepted = true
+          } else if (root.filterable && event.key === Qt.Key_Space && (event.modifiers === Qt.NoModifier || event.modifiers === Qt.ShiftModifier)) {
+            root.updateFilter(root.filterText + " ")
             event.accepted = true
           } else if (event.key === Qt.Key_Left || (event.key === Qt.Key_Tab && event.modifiers & Qt.ShiftModifier) || event.key === Qt.Key_Backtab) {
             root.selectAdjacent(-1)
@@ -1087,16 +1095,44 @@ Item {
 
         Component.onCompleted: forceActiveFocus()
 
-        // The Prismatic Fanned Arc Repeater
+        // The Prismatic Fanned Arc Repeater (Virtualized 11-Delegate Pool)
         Repeater {
           id: cardRepeater
-          model: root.imageArray.length
+          model: Math.min(11, root.imageArray.length > 0 ? 11 : 0)
 
           delegate: Item {
             id: stackCard
             required property int index
 
-            readonly property var imageData: root.imageArray[index]
+            // Ring-buffer virtual mapping
+            readonly property int poolSlot: index
+            readonly property int totalMatches: root.totalMatchesCount
+            readonly property int curMatchPos: root.selectedFilteredPosition()
+
+            // Find which relative offset r in [-4 .. 4] maps to poolSlot
+            readonly property int relativeIndex: {
+              if (totalMatches <= 0) return 999
+              for (var r = -4; r <= 4; r++) {
+                var p = curMatchPos + r
+                if (p >= 0 && p < totalMatches) {
+                  var slot = ((p % 11) + 11) % 11
+                  if (slot === poolSlot) return r
+                }
+              }
+              return 999
+            }
+
+            readonly property int assignedIndex: {
+              var r = relativeIndex
+              if (r === 999 || totalMatches <= 0) return -1
+              var p = curMatchPos + r
+              var mi = root.filterPositions ? root.filterPositions.matchIndices : null
+              if (mi && p >= 0 && p < mi.length) return mi[p]
+              return (p >= 0 && p < root.imageArray.length) ? p : -1
+            }
+
+            readonly property bool matched: assignedIndex >= 0
+            readonly property var imageData: assignedIndex >= 0 ? root.imageArray[assignedIndex] : null
             readonly property string filePath: imageData ? imageData.filePath : ""
             readonly property string fileName: imageData ? imageData.fileName : ""
             readonly property string thumbnailPath: imageData ? imageData.thumbnailPath : ""
@@ -1131,17 +1167,7 @@ Item {
               }
             ]
 
-            readonly property bool matched: root.itemMatches(index)
-            readonly property int totalMatches: root.filterText ? root.filterPositions.filter(function(p) { return p >= 0 }).length : root.imageArray.length
-            readonly property int rawRelative: root.filteredPosition(index) - root.selectedFilteredPosition()
-            readonly property int relativeIndex: {
-              if (totalMatches <= 1) return 0
-              var r = rawRelative
-              if (r > Math.floor(totalMatches / 2)) r -= totalMatches
-              else if (r < -Math.floor(totalMatches / 2)) r += totalMatches
-              return r
-            }
-            readonly property bool isHero: matched && index === root.selectedIndex
+            readonly property bool isHero: matched && assignedIndex === root.selectedIndex
             readonly property bool inStack: matched && relativeIndex >= -3 && relativeIndex <= 3
             readonly property bool sourceActivated: root.opened && inStack
             // Readiness belongs to this item: never borrow artwork from a prior selection.
@@ -1265,7 +1291,7 @@ Item {
               cursorShape: Qt.PointingHandCursor
               onEntered: stackCard.isHovered = true
               onExited: stackCard.isHovered = false
-              onClicked: root.select(index)
+              onClicked: root.select(stackCard.assignedIndex)
             }
 
             // Hero Card Mouse Tracking for Dynamic 3D Parallax Tilt
@@ -1419,7 +1445,7 @@ Item {
 
             // Floating Left Nav Arrow (Docked inside Hero Card)
             Rectangle {
-              visible: stackCard.isHero && root.imageArray.length > 1
+              visible: stackCard.isHero && root.totalMatchesCount > 1
               opacity: root.peekMode ? 0.0 : 1.0
               Behavior on opacity { NumberAnimation { duration: 180 } }
               anchors.left: parent.left
@@ -1457,7 +1483,7 @@ Item {
 
             // Floating Right Nav Arrow (Docked inside Hero Card)
             Rectangle {
-              visible: stackCard.isHero && root.imageArray.length > 1
+              visible: stackCard.isHero && root.totalMatchesCount > 1
               opacity: root.peekMode ? 0.0 : 1.0
               Behavior on opacity { NumberAnimation { duration: 180 } }
               anchors.right: parent.right
@@ -1616,7 +1642,7 @@ Item {
                   }
 
                   Text {
-                    text: (root.selectedFilteredPosition() + 1) + " / " + (root.filterText ? root.filterPositions.filter(function(p) { return p >= 0 }).length : root.imageArray.length)
+                    text: (root.selectedFilteredPosition() + 1) + " / " + root.totalMatchesCount
                     color: root.foreground
                     font.pixelSize: Style.font.caption
                     font.weight: Font.DemiBold
@@ -1932,7 +1958,7 @@ Item {
             radius: parent.radius
             color: root.selectedBorder
             width: {
-              var count = root.filterText ? root.filterPositions.filter(function(p) { return p >= 0 }).length : root.imageArray.length
+              var count = root.totalMatchesCount
               if (count <= 1) return parent.width
               return Math.max(Style.space(16), Math.round(parent.width * ((root.selectedFilteredPosition() + 1) / count)))
             }
@@ -2025,10 +2051,17 @@ Item {
             anchors.verticalCenter: parent.verticalCenter
             Rectangle {
               height: Style.space(22)
-              width: Style.space(48)
+              width: Style.space(root.filterText ? 68 : 48)
               radius: Style.space(5)
               color: Util.alpha(ShellCommons.Color.foreground, 0.12)
-              Text { anchors.centerIn: parent; text: "Space"; color: root.foreground; font.pixelSize: Style.font.caption; font.weight: Font.Bold; font.family: Style.font.menuFamily }
+              Text {
+                anchors.centerIn: parent
+                text: root.filterText ? "Ctrl+Space" : "Space"
+                color: root.foreground
+                font.pixelSize: Style.font.caption
+                font.weight: Font.Bold
+                font.family: Style.font.menuFamily
+              }
             }
             Text { text: "Peek"; color: Util.alpha(root.foreground, 0.75); font.pixelSize: Style.font.caption; font.family: Style.font.menuFamily; anchors.verticalCenter: parent.verticalCenter }
           }

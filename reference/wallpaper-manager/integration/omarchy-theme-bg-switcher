@@ -17,17 +17,38 @@ try:
     from wallpaper_visibility import hidden_defaults
 except ImportError:
     hidden_defaults = lambda p: set()
+try:
+    import wallpaper_groups as grouping
+except ImportError:
+    grouping = None
 
 current = (state / 'background').resolve() if (state / 'background').exists() else ''
 theme = (state / 'theme.name').read_text().strip() if (state / 'theme.name').is_file() else ''
 root = Path(os.environ.get('OMARCHY_PATH', str(h / '.local/share/omarchy')))
 stock = root / 'themes'
+user_themes = h / '.config/omarchy/themes'
 hidden = hidden_defaults(stock if stock.is_dir() else Path('/usr/share/omarchy/themes'))
 
+data = grouping.load() if grouping else {'assignments': {}}
+current_group = grouping.group_for(theme, data=data) if (grouping and theme) else ''
+all_mode = '--all' in sys.argv
+
 dirs = [state / 'theme/backgrounds', h / '.config/omarchy/backgrounds' / theme]
-for base in [h / '.config/omarchy/themes', root / 'themes', Path('/usr/share/omarchy/themes')]:
-    if base.is_dir():
-        dirs.extend(d / 'backgrounds' for d in sorted(base.iterdir()) if d.is_dir() and d.name not in hidden)
+
+if all_mode or not current_group:
+    for base in [user_themes, stock, Path('/usr/share/omarchy/themes')]:
+        if base.is_dir():
+            dirs.extend(d / 'backgrounds' for d in sorted(base.iterdir()) if d.is_dir() and d.name not in hidden)
+else:
+    # Lazy group-scoped collection: only collect from themes in current group
+    group_slugs = [s for s, g in data.get('assignments', {}).items() if g == current_group and s not in hidden]
+    for s in group_slugs:
+        for base in [user_themes, stock]:
+            bg_dir = base / s / 'backgrounds'
+            if bg_dir.is_dir():
+                dirs.append(bg_dir)
+                break
+
 extra = h / '.config/omarchy/backgrounds'
 if extra.is_dir():
     dirs.extend(d for d in sorted(extra.iterdir()) if d.is_dir() and d.name not in hidden)
@@ -41,7 +62,8 @@ if '--prepare-only' in sys.argv:
 # Build a unified cache directory with .rows.tsv so omarchy-menu-images only receives 1 directory
 # and never overflows Linux MAX_ARG_STRLEN (128KB) or Quickshell IPC limits.
 EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
-cache_dir = Path(os.environ.get('XDG_CACHE_HOME', h / '.cache')) / 'omarchy/wallpaper-gallery'
+group_key = 'all' if all_mode else hashlib.sha256(current_group.encode()).hexdigest()[:12] if current_group else 'ungrouped'
+cache_dir = Path(os.environ.get('XDG_CACHE_HOME', h / '.cache')) / 'omarchy/wallpaper-gallery' / group_key
 cache_dir.mkdir(parents=True, exist_ok=True)
 tsv_file = cache_dir / '.rows.tsv'
 cache_thumbs = Path(os.environ.get('XDG_CACHE_HOME', h / '.cache')) / 'omarchy/image-selector-v4'

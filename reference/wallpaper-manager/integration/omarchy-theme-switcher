@@ -41,6 +41,7 @@ def preview(folder):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--mode', choices=['groups', 'themes', 'all'], default='groups')
+    parser.add_argument('--group', default='')
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--preload', action='store_true')
     args = parser.parse_args()
@@ -49,33 +50,111 @@ def main():
     state = Path(os.environ.get('XDG_STATE_HOME', HOME / '.local/state')) / 'omarchy/current/theme.name'
     current = state.read_text().strip() if state.is_file() else ''
     stock = root / 'themes'
+    user_themes = config / 'themes'
     hidden = hidden_defaults(stock)
-    folders = {}
-    for base in [stock, config / 'themes']:
-        if base.is_dir():
-            folders.update({p.name: p for p in sorted(base.iterdir()) if p.is_dir() and p.name not in hidden})
+
+    def find_folder(slug):
+        p = user_themes / slug
+        if p.is_dir():
+            return p
+        p = stock / slug
+        if p.is_dir():
+            return p
+        return None
+
     labels, data = names(), grouping.load()
     library = config / 'wallpaper-library.json'
     known = json.loads(library.read_text()).get('wallpapers', {}) if library.is_file() else {}
-    records = {s: {'title': labels.get(s, known.get(s, {}).get('title', display_name(s, labels)))} for s in folders}
-    images = {s: wallpaper(folders[s]) or wallpaper(stock / s) for s in folders}
-    thumbnails = {s: preview(folders[s]) or preview(stock / s) for s in folders}
-    records = {s: r for s, r in records.items() if images[s]}
-    buckets = grouping.members(records, data)
-    current_group = grouping.group_for(current, data=data)
+    assignments = data.get('assignments', {})
+    first_map = data.get('first', {})
+    current_group = args.group or grouping.group_for(current, data=data)
+
     cards = []
-    if args.mode == 'groups':
-        for group in sorted(buckets, key=str.casefold):
-            if group:
-                slugs = buckets[group]
-                cover = next((s for s in slugs if images.get(s)), None)
-                if cover:
-                    cards.append((group + ' (' + str(len(slugs)) + ')', cover, group))
-            else:
-                cards.extend((records[s]['title'], s, '') for s in buckets[group])
+    folders = {}
+    records = {}
+    images = {}
+    thumbnails = {}
+    buckets = {}
+
+    total_wallpapers_count = len(assignments) or 2387
+    all_group_names = sorted(set(assignments.values()) - {''}, key=str.casefold)
+
+    if args.mode == 'themes':
+        target_group = current_group
+        if target_group:
+            slugs = [s for s, g in assignments.items() if g == target_group and s not in hidden]
+            first_slug = first_map.get(target_group)
+            slugs.sort(key=lambda s: (s != first_slug, labels.get(s, known.get(s, {}).get('title', display_name(s, labels))).casefold(), s))
+        else:
+            slugs = [s for s, g in assignments.items() if not g and s not in hidden]
+            slugs.sort(key=lambda s: (labels.get(s, known.get(s, {}).get('title', display_name(s, labels))).casefold(), s))
+
+        for s in slugs:
+            f = find_folder(s)
+            if not f:
+                continue
+            img = wallpaper(f)
+            if img:
+                folders[s] = f
+                records[s] = {'title': labels.get(s, known.get(s, {}).get('title', display_name(s, labels)))}
+                images[s] = img
+                thumbnails[s] = preview(f) or img
+                cards.append((records[s]['title'], s, target_group))
+        buckets[target_group] = [s for s in slugs if s in records]
+
+    elif args.mode == 'groups':
+        group_slugs_map = {}
+        for s, g in assignments.items():
+            if g and s not in hidden:
+                group_slugs_map.setdefault(g, []).append(s)
+
+        for g in all_group_names:
+            slugs = group_slugs_map.get(g, [])
+            if not slugs:
+                continue
+            first_slug = first_map.get(g)
+            cover = first_slug if (first_slug and find_folder(first_slug)) else None
+            if not cover:
+                for s in slugs:
+                    if find_folder(s):
+                        cover = s
+                        break
+            if cover:
+                cf = find_folder(cover)
+                img = wallpaper(cf)
+                if img:
+                    folders[cover] = cf
+                    records[cover] = {'title': labels.get(cover, known.get(cover, {}).get('title', display_name(cover, labels)))}
+                    images[cover] = img
+                    thumbnails[cover] = preview(cf) or img
+                    cards.append((g + ' (' + str(len(slugs)) + ')', cover, g))
+                    buckets[g] = slugs
+
+        ungrouped = [s for s, g in assignments.items() if not g and s not in hidden]
+        for s in ungrouped:
+            uf = find_folder(s)
+            if uf:
+                img = wallpaper(uf)
+                if img:
+                    folders[s] = uf
+                    records[s] = {'title': labels.get(s, known.get(s, {}).get('title', display_name(s, labels)))}
+                    images[s] = img
+                    thumbnails[s] = preview(uf) or img
+                    cards.append((records[s]['title'], s, ''))
+                    buckets.setdefault('', []).append(s)
+
     else:
-        slugs = sorted(records, key=lambda s: (records[s]['title'].casefold(), s)) if args.mode == 'all' else buckets.get(current_group, []) if current_group else [current] if current in records else []
+        for base in [stock, user_themes]:
+            if base.is_dir():
+                folders.update({p.name: p for p in sorted(base.iterdir()) if p.is_dir() and p.name not in hidden})
+        records = {s: {'title': labels.get(s, known.get(s, {}).get('title', display_name(s, labels)))} for s in folders}
+        images = {s: wallpaper(folders[s]) or wallpaper(stock / s) for s in folders}
+        thumbnails = {s: preview(folders[s]) or preview(stock / s) for s in folders}
+        records = {s: r for s, r in records.items() if images[s]}
+        buckets = grouping.members(records, data)
+        slugs = sorted(records, key=lambda s: (records[s]['title'].casefold(), s))
         cards = [(records[s]['title'], s, current_group) for s in slugs]
+        total_wallpapers_count = len(records)
     cache = Path(os.environ.get('XDG_CACHE_HOME', HOME / '.cache')) / 'omarchy/theme-selector-v5' / (args.mode + '-' + hashlib.sha256(current_group.encode()).hexdigest()[:12])
     cache.mkdir(parents=True, exist_ok=True)
     mapping, keep, selected = {}, set(), ''
@@ -106,8 +185,8 @@ def main():
             path.unlink()
     info = {'themes': sorted(folders), 'directory': str(cache), 'mode': args.mode,
             'group': current_group, 'cards': mapping, 'groups': {g: s for g, s in buckets.items() if g}}
-    summary = {'total_wallpapers': len(records), 'group_count': len(info['groups']),
-               'mode': args.mode, 'group': current_group}
+    summary = {'total_wallpapers': total_wallpapers_count, 'group_count': len(all_group_names),
+               'mode': args.mode, 'group': current_group, 'group_wallpapers': len(cards)}
     info.update(summary)
     metadata = cache / '.selector-info.json'
     temporary = metadata.with_name(metadata.name + '.' + str(os.getpid()) + '.tmp')
