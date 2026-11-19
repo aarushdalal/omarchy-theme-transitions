@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.6.1] - 2026-11-19
+
+- **Wallpaper Switcher & Large Library Argument Safeguard**:
+  - Re-architected `omarchy-theme-bg-switcher` to precompile wallpaper entries into a cached `.rows.tsv` inside `~/.cache/omarchy/wallpaper-gallery/` and dispatch a single directory argument, permanently eliminating Linux kernel `MAX_ARG_STRLEN` (128 KB) `E2BIG` argument overflow across large library collections (2,400+ installed themes).
+  - Hardened `omarchy-menu-images` to automatically consolidate directory arguments into `~/.cache/omarchy/image-selector-v4/combined/.rows.tsv` whenever the encoded directory payload exceeds 32 KB.
+  - Added periodic IPC liveness verification in `omarchy-menu-images` while waiting for picker completion to prevent deadlocks.
+  - Enhanced `omarchy-theme-bg-next` with intelligent fallback pooling: automatically cycles through all wallpapers in the active theme's group and `~/Wallpapers` when a theme contains only a single background.
+  - Synchronized image picker manifest and companion wallpaper manager integration scripts.
+
 ## [1.6.0] - 2026-11-02
 
 - Refine the optional Wallpaper Manager with calmer materials, finite entrance/interaction motion, larger artwork and clear selection actions.

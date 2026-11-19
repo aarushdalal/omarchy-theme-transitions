@@ -125,7 +125,14 @@ def main():
     # collections use the native asynchronous directory scan over the same rows.
     image_dirs=''
     if len(encoded)>32768:
-        image_dirs='\n'.join(dirs)
+        joined_dirs='\n'.join(dirs)
+        if len(joined_dirs)>32768:
+            combined=CACHE/'combined'
+            combined.mkdir(parents=True,exist_ok=True)
+            atomic(combined/'.rows.tsv',rows+'\n')
+            image_dirs=str(combined)
+        else:
+            image_dirs=joined_dirs
         encoded=''
     if a.preload:
         if image_dirs:return 0
@@ -140,7 +147,13 @@ def main():
             print('Image selector did not accept the request: '+reason,file=sys.stderr);return 1
         atomic(CACHE/'last-open.json',json.dumps({'rows':len(rows.splitlines()),'ipc_seconds':round(time.monotonic()-started,4),'accepted':True}))
         try:
-            while not done.exists():time.sleep(.05)
+            checks = 0
+            while not done.exists():
+                time.sleep(.05)
+                checks += 1
+                if checks % 20 == 0:
+                    if subprocess.run(['omarchy-shell', '-q', 'image-selector', 'ping'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode != 0:
+                        break
         except KeyboardInterrupt:
             subprocess.run(['omarchy-shell','-q','image-selector','cancel',str(done)],stdout=subprocess.DEVNULL,check=False)
             return 0

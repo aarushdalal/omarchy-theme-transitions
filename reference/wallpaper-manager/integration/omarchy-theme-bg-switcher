@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+# omarchy:group=theme
+# omarchy:name=bg-switcher
+# omarchy:aliases=omarchy background
+# omarchy:summary=Open the optimized wallpaper gallery
+import hashlib
+import json
+import os
+from pathlib import Path
+import sys
+import time
+
+h = Path.home()
+state = h / '.local/state/omarchy/current'
+sys.path.insert(0, str(h / 'Projects/wallpaper-importer'))
+try:
+    from wallpaper_visibility import hidden_defaults
+except ImportError:
+    hidden_defaults = lambda p: set()
+
+current = (state / 'background').resolve() if (state / 'background').exists() else ''
+theme = (state / 'theme.name').read_text().strip() if (state / 'theme.name').is_file() else ''
+root = Path(os.environ.get('OMARCHY_PATH', str(h / '.local/share/omarchy')))
+stock = root / 'themes'
+hidden = hidden_defaults(stock if stock.is_dir() else Path('/usr/share/omarchy/themes'))
+
+dirs = [state / 'theme/backgrounds', h / '.config/omarchy/backgrounds' / theme]
+for base in [h / '.config/omarchy/themes', root / 'themes', Path('/usr/share/omarchy/themes')]:
+    if base.is_dir():
+        dirs.extend(d / 'backgrounds' for d in sorted(base.iterdir()) if d.is_dir() and d.name not in hidden)
+extra = h / '.config/omarchy/backgrounds'
+if extra.is_dir():
+    dirs.extend(d for d in sorted(extra.iterdir()) if d.is_dir() and d.name not in hidden)
+dirs.extend([h / 'Wallpapers', h / '.local/share/caelestia/omarchy-wallpapers'])
+valid_dirs = [d for d in dict.fromkeys(dirs) if d.is_dir()]
+
+if '--prepare-only' in sys.argv:
+    print(json.dumps({'directories': [str(d) for d in valid_dirs]}))
+    sys.exit(0)
+
+# Build a unified cache directory with .rows.tsv so omarchy-menu-images only receives 1 directory
+# and never overflows Linux MAX_ARG_STRLEN (128KB) or Quickshell IPC limits.
+EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
+cache_dir = Path(os.environ.get('XDG_CACHE_HOME', h / '.cache')) / 'omarchy/wallpaper-gallery'
+cache_dir.mkdir(parents=True, exist_ok=True)
+tsv_file = cache_dir / '.rows.tsv'
+cache_thumbs = Path(os.environ.get('XDG_CACHE_HOME', h / '.cache')) / 'omarchy/image-selector-v4'
+
+# Rebuild .rows.tsv if missing or older than 120 seconds
+rebuild = True
+if tsv_file.is_file():
+    try:
+        age = time.time() - tsv_file.stat().st_mtime
+        if age < 120 and tsv_file.stat().st_size > 0:
+            rebuild = False
+    except OSError:
+        pass
+
+if rebuild:
+    seen = set()
+    rows = []
+    for folder in valid_dirs:
+        try:
+            entries = sorted(folder.iterdir())
+        except OSError:
+            continue
+        for p in entries:
+            if p.suffix.lower() not in EXTS or not p.is_file():
+                continue
+            try:
+                stat = p.stat()
+            except OSError:
+                continue
+            identity = (stat.st_dev, stat.st_ino)
+            if identity in seen:
+                continue
+            seen.add(identity)
+
+            thumb_key = hashlib.sha256((str(p.resolve()) + ':' + str(stat.st_size) + ':' + str(stat.st_mtime_ns)).encode()).hexdigest()[:24]
+            thumb = cache_thumbs / (thumb_key + '.jpg')
+            thumb_target = str(thumb) if thumb.is_file() else str(p.resolve())
+            rows.append(f'{p.resolve()}\t{thumb_target}')
+
+    tmp_tsv = tsv_file.with_name('.rows.tsv.' + str(os.getpid()) + '.tmp')
+    tmp_tsv.write_text('\n'.join(rows) + '\n')
+    tmp_tsv.replace(tsv_file)
+
+args = [
+    str(h / '.local/bin/omarchy-menu-images'),
+    '--filterable',
+    '--lazy-thumbnails',
+    '--selected', str(current),
+    str(cache_dir)
+]
+os.execvp(args[0], args)
